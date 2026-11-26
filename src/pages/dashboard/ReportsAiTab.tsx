@@ -31,6 +31,7 @@ import {
   type Revenue,
   type SavedReport,
   type ServiceItem,
+  type Subscription,
 } from '../../services/firestoreService';
 import { exportFinancialReportPDF, exportToCSV } from '../../utils/export';
 import { formatBRL, formatDateBR } from '../../utils/format';
@@ -46,6 +47,7 @@ interface ReportsAiTabProps {
   services: ServiceItem[];
   clients: CustomerClient[];
   savedReports: SavedReport[];
+  activeSubscription?: Subscription | null;
 }
 
 export function ReportsAiTab({
@@ -59,6 +61,7 @@ export function ReportsAiTab({
   services,
   clients,
   savedReports,
+  activeSubscription,
 }: ReportsAiTabProps) {
   const { getIdToken } = useAuth();
   const { lang, intlLocale, t, pick } = useLanguage();
@@ -204,6 +207,8 @@ export function ReportsAiTab({
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
+          companyId: company.id,
+          preapprovalId: activeSubscription?.mpPreapprovalId,
           companyName: company.name,
           sector: company.sector || 'Geral',
           monthlyGoal: company.monthlyGoal || 0,

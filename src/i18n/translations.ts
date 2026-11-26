@@ -118,7 +118,7 @@ const pt = {
     bottomEyebrow: 'Implantação imediata em nuvem',
     bottomTitle: 'Organize o financeiro da sua empresa hoje mesmo.',
     bottomDesc:
-      'Crie sua conta gratuita, cadastre sua empresa e comece a registrar receitas, despesas e metas com total isolamento e segurança.',
+      'Crie sua conta, cadastre sua empresa, escolha seu plano e comece a gerenciar receitas, despesas e metas com total isolamento e segurança.',
     bottomPrimaryAuth: 'Acessar Painel',
     bottomPrimaryGuest: 'Começar Agora',
     bottomSecondary: 'Ver Planos',
@@ -574,7 +574,7 @@ const en: TranslationSchema = {
     bottomEyebrow: 'Instant cloud deployment',
     bottomTitle: 'Organize your company finances today.',
     bottomDesc:
-      'Create your free account, register your company, and start tracking revenues, expenses, and goals with complete isolation and security.',
+      'Create your account, register your company, choose your plan, and start managing revenues, expenses, and goals with complete isolation and security.',
     bottomPrimaryAuth: 'Open Dashboard',
     bottomPrimaryGuest: 'Get Started',
     bottomSecondary: 'View Plans',
@@ -1028,7 +1028,7 @@ const es: TranslationSchema = {
     bottomEyebrow: 'Implementación inmediata en la nube',
     bottomTitle: 'Organice las finanzas de su empresa hoy mismo.',
     bottomDesc:
-      'Cree su cuenta gratuita, registre su empresa y comience a controlar ingresos, gastos y metas con total aislamiento y seguridad.',
+      'Cree su cuenta, registre su empresa, elija su plan y comience a controlar ingresos, gastos y metas con total aislamiento y seguridad.',
     bottomPrimaryAuth: 'Abrir Panel',
     bottomPrimaryGuest: 'Comenzar Ahora',
     bottomSecondary: 'Ver Planes',
@@ -1482,7 +1482,7 @@ const fr: TranslationSchema = {
     bottomEyebrow: 'Déploiement cloud immédiat',
     bottomTitle: 'Structurez les finances de votre entreprise dès aujourd’hui.',
     bottomDesc:
-      'Créez votre compte gratuit, configurez votre société et suivez vos revenus, dépenses et objectifs en toute sécurité.',
+      'Créez votre compte, configurez votre société, choisissez votre offre et pilotez vos revenus, dépenses et objectifs en toute sécurité.',
     bottomPrimaryAuth: 'Ouvrir l’Espace',
     bottomPrimaryGuest: 'Commencer Maintenant',
     bottomSecondary: 'Voir les Tarifs',

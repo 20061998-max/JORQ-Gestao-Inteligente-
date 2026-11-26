@@ -891,6 +891,41 @@ async function startServer() {
     });
   });
 
+  app.post(
+    '/api/admin/set-company-access',
+    verifyRequestOrigin,
+    requireAuth,
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      const { companyId, subscriptionId, userId, planId, planName, billingCycle, totalAmount, status } =
+        req.body || {};
+      if (typeof companyId !== 'string' || !companyId.trim() || !['authorized', 'suspended'].includes(status)) {
+        res.status(400).json({ error: 'Parâmetros inválidos para atualizar acesso da empresa.' });
+        return;
+      }
+      const ledger = readLedger();
+      const existing = ledger.companyAccess[companyId.trim()];
+      const nowIso = new Date().toISOString();
+      const updated: VerifiedSubscriptionRecord = {
+        subscriptionId: typeof subscriptionId === 'string' && subscriptionId ? subscriptionId : existing?.subscriptionId || `admin_${companyId}`,
+        companyId: companyId.trim(),
+        userId: typeof userId === 'string' && userId ? userId : existing?.userId || '',
+        preapprovalId: existing?.preapprovalId || `admin_${companyId}`,
+        planId: typeof planId === 'string' ? planId : existing?.planId || '',
+        planName: typeof planName === 'string' ? planName : existing?.planName || 'Plano JORQ',
+        billingCycle: typeof billingCycle === 'string' ? billingCycle : existing?.billingCycle || 'monthly',
+        totalAmount: typeof totalAmount === 'number' ? totalAmount : existing?.totalAmount || 0,
+        status: status === 'authorized' ? 'authorized' : 'paused',
+        mpStatus: status === 'authorized' ? 'authorized' : 'paused',
+        nextBillingDate: existing?.nextBillingDate || null,
+        lastVerifiedAt: nowIso,
+      };
+      ledger.companyAccess[companyId.trim()] = updated;
+      writeLedger(ledger);
+      res.json({ ok: true, status: updated.status });
+    }
+  );
+
   // ==================== SERVER-SIDE GEMINI AI ====================
   app.post(
     '/api/ai/financial-analysis',
@@ -906,10 +941,83 @@ async function startServer() {
         return;
       }
 
-      const { companyName, sector, monthlyGoal, summary, question, mode, language } = req.body || {};
+      const { companyId, preapprovalId, companyName, sector, monthlyGoal, summary, question, mode, language } =
+        req.body || {};
       if (!companyName || !summary) {
         res.status(400).json({ error: 'Contexto financeiro da empresa obrigatório.' });
         return;
+      }
+
+      const isOwnerAdmin =
+        Boolean(req.authUser?.emailVerified) &&
+        req.authUser?.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL;
+
+      if (!isOwnerAdmin) {
+        if (typeof companyId !== 'string' || !companyId.trim()) {
+          res.status(402).json({
+            error: 'Assinatura ativa obrigatória para utilizar o Consultor Financeiro com IA.',
+          });
+          return;
+        }
+        const ledger = readLedger();
+        const access = ledger.companyAccess[companyId.trim()];
+        let hasActivePlan = Boolean(
+          access && access.status === 'authorized' && (!access.userId || access.userId === req.authUser?.uid)
+        );
+
+        if (!hasActivePlan && typeof preapprovalId === 'string' && preapprovalId.trim()) {
+          const mp = getMpConfig();
+          if (mp.accessToken) {
+            try {
+              const mpRes = await fetch(
+                `https://api.mercadopago.com/preapproval/${encodeURIComponent(preapprovalId.trim())}`,
+                {
+                  headers: {
+                    Authorization: `Bearer ${mp.accessToken}`,
+                    'Content-Type': 'application/json',
+                  },
+                }
+              );
+              if (mpRes.ok) {
+                const mpData = (await mpRes.json()) as Record<string, unknown>;
+                const mpStatus = String(mpData.status || 'pending');
+                const internal = mapMpStatusToInternal(mpStatus);
+                if (internal === 'authorized') {
+                  hasActivePlan = true;
+                  const record: VerifiedSubscriptionRecord = {
+                    subscriptionId: String(mpData.external_reference || preapprovalId.trim()),
+                    companyId: companyId.trim(),
+                    userId: req.authUser!.uid,
+                    preapprovalId: preapprovalId.trim(),
+                    planId: ledger.subscriptions[preapprovalId.trim()]?.planId || '',
+                    planName: String(mpData.reason || 'Plano JORQ'),
+                    billingCycle: ledger.subscriptions[preapprovalId.trim()]?.billingCycle || 'monthly',
+                    totalAmount: Number(
+                      (mpData.auto_recurring as Record<string, unknown> | undefined)?.transaction_amount || 0
+                    ),
+                    status: 'authorized',
+                    mpStatus,
+                    nextBillingDate: typeof mpData.next_payment_date === 'string' ? mpData.next_payment_date : null,
+                    lastVerifiedAt: new Date().toISOString(),
+                  };
+                  ledger.subscriptions[preapprovalId.trim()] = record;
+                  ledger.companyAccess[companyId.trim()] = record;
+                  writeLedger(ledger);
+                }
+              }
+            } catch {
+              // ignore transient MP fetch error and deny below
+            }
+          }
+        }
+
+        if (!hasActivePlan) {
+          res.status(402).json({
+            error:
+              'Assinatura ativa obrigatória para utilizar o Consultor Financeiro com IA. Escolha um plano e conclua o pagamento na aba Assinatura.',
+          });
+          return;
+        }
       }
 
       const targetLang: 'pt' | 'en' | 'es' | 'fr' =

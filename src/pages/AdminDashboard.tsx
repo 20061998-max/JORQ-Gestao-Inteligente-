@@ -1275,14 +1275,62 @@ export function AdminDashboard({
                           <td className="py-3 px-5 text-right space-x-2">
                             <button
                               type="button"
-                              onClick={() => adminUpdateSubscriptionStatus(s.id, 'authorized')}
+                              onClick={async () => {
+                                await adminUpdateSubscriptionStatus(s.id, 'authorized');
+                                try {
+                                  const token = await getIdToken();
+                                  await fetch('/api/admin/set-company-access', {
+                                    method: 'POST',
+                                    headers: {
+                                      'Content-Type': 'application/json',
+                                      Authorization: `Bearer ${token}`,
+                                    },
+                                    body: JSON.stringify({
+                                      companyId: s.companyId,
+                                      subscriptionId: s.id,
+                                      userId: s.userId,
+                                      planId: s.planId,
+                                      planName: s.planName,
+                                      billingCycle: s.billingCycle,
+                                      totalAmount: s.totalAmount,
+                                      status: 'authorized',
+                                    }),
+                                  });
+                                } catch {
+                                  // ignore transient sync failure
+                                }
+                              }}
                               className="text-xs font-semibold text-[#16A34A] hover:underline cursor-pointer"
                             >
                               Ativar
                             </button>
                             <button
                               type="button"
-                              onClick={() => adminUpdateSubscriptionStatus(s.id, 'suspended')}
+                              onClick={async () => {
+                                await adminUpdateSubscriptionStatus(s.id, 'suspended');
+                                try {
+                                  const token = await getIdToken();
+                                  await fetch('/api/admin/set-company-access', {
+                                    method: 'POST',
+                                    headers: {
+                                      'Content-Type': 'application/json',
+                                      Authorization: `Bearer ${token}`,
+                                    },
+                                    body: JSON.stringify({
+                                      companyId: s.companyId,
+                                      subscriptionId: s.id,
+                                      userId: s.userId,
+                                      planId: s.planId,
+                                      planName: s.planName,
+                                      billingCycle: s.billingCycle,
+                                      totalAmount: s.totalAmount,
+                                      status: 'suspended',
+                                    }),
+                                  });
+                                } catch {
+                                  // ignore transient sync failure
+                                }
+                              }}
                               className="text-xs font-semibold text-[#DC2626] hover:underline cursor-pointer"
                             >
                               Suspender
