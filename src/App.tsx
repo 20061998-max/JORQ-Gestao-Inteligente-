@@ -55,15 +55,11 @@ function AppRouter() {
     );
   }
 
-  // Workspace view (Client or Admin)
+  // Workspace view (Admin strictly isolated to AdminDashboard; Clients strictly to ClientDashboard)
   if (inWorkspace && isAuthenticatedAndVerified) {
-    if (viewMode === 'admin' && isAdmin) {
+    if (isAdmin) {
       return (
         <AdminDashboard
-          onEnterClientMode={() => {
-            setInWorkspace(true);
-            setViewMode('client');
-          }}
           onBackToClient={() => {
             setInWorkspace(false);
             setPublicRoute('home');
@@ -73,28 +69,7 @@ function AppRouter() {
     }
 
     if (!company) {
-      if (isAdmin && viewMode === 'admin') {
-        return (
-          <AdminDashboard
-            onEnterClientMode={() => {
-              setInWorkspace(true);
-              setViewMode('client');
-            }}
-          />
-        );
-      }
-      return (
-        <OnboardingPage
-          onBackToAdmin={
-            isAdmin
-              ? () => {
-                  setInWorkspace(true);
-                  setViewMode('admin');
-                }
-              : undefined
-          }
-        />
-      );
+      return <OnboardingPage />;
     }
 
     return (
@@ -102,7 +77,6 @@ function AppRouter() {
         initialTab={initialClientTab}
         preselectedPlanId={preselectedPlanId}
         preselectedCycle={preselectedCycle}
-        onOpenAdmin={isAdmin ? () => setViewMode('admin') : undefined}
         onGoPublicHome={() => {
           setInWorkspace(false);
           setPublicRoute('home');
@@ -113,13 +87,9 @@ function AppRouter() {
 
   // If user completed Auth on AuthPage and is verified, enter workspace automatically
   if (publicRoute === 'auth' && isAuthenticatedAndVerified) {
-    if (isAdmin && !company) {
+    if (isAdmin) {
       return (
         <AdminDashboard
-          onEnterClientMode={() => {
-            setInWorkspace(true);
-            setViewMode('client');
-          }}
           onBackToClient={() => {
             setPublicRoute('home');
           }}
@@ -127,32 +97,13 @@ function AppRouter() {
       );
     }
     if (!company) {
-      return (
-        <OnboardingPage
-          onBackToAdmin={
-            isAdmin
-              ? () => {
-                  setInWorkspace(true);
-                  setViewMode('admin');
-                }
-              : undefined
-          }
-        />
-      );
+      return <OnboardingPage />;
     }
     return (
       <ClientDashboard
         initialTab={initialClientTab}
         preselectedPlanId={preselectedPlanId}
         preselectedCycle={preselectedCycle}
-        onOpenAdmin={
-          isAdmin
-            ? () => {
-                setInWorkspace(true);
-                setViewMode('admin');
-              }
-            : undefined
-        }
         onGoPublicHome={() => setPublicRoute('home')}
       />
     );
@@ -164,7 +115,7 @@ function AppRouter() {
     setInitialClientTab('subscription');
     if (isAuthenticatedAndVerified) {
       setInWorkspace(true);
-      setViewMode('client');
+      setViewMode(isAdmin ? 'admin' : 'client');
     } else {
       setPublicRoute('auth');
     }
@@ -178,7 +129,7 @@ function AppRouter() {
       onEnterApp={() => {
         setInitialClientTab('overview');
         setInWorkspace(true);
-        setViewMode(isAdmin && !company ? 'admin' : 'client');
+        setViewMode(isAdmin ? 'admin' : 'client');
       }}
     >
       {publicRoute === 'home' && (
@@ -188,7 +139,7 @@ function AppRouter() {
           onEnterApp={() => {
             setInitialClientTab('overview');
             setInWorkspace(true);
-            setViewMode(isAdmin && !company ? 'admin' : 'client');
+            setViewMode(isAdmin ? 'admin' : 'client');
           }}
         />
       )}
@@ -205,7 +156,7 @@ function AppRouter() {
         <AuthPage
           onSuccess={() => {
             setInWorkspace(true);
-            setViewMode(isAdmin && !company ? 'admin' : 'client');
+            setViewMode(isAdmin ? 'admin' : 'client');
           }}
         />
       )}

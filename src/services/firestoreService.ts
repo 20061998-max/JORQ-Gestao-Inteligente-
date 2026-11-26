@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   addDoc,
+  getDoc,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -456,7 +457,7 @@ export async function saveReportSnapshot(
 
 export async function updateCompanySettings(
   companyId: string,
-  input: Partial<Pick<Company, 'name' | 'tradeName' | 'document' | 'phone' | 'address' | 'sector' | 'logoUrl' | 'monthlyGoal'>>
+  input: Partial<Pick<Company, 'name' | 'tradeName' | 'document' | 'phone' | 'address' | 'sector' | 'logoUrl'>>
 ): Promise<void> {
   const clean: Record<string, unknown> = { updatedAt: serverTimestamp() };
   if (input.name !== undefined) clean.name = input.name.trim().slice(0, 140);
@@ -466,11 +467,59 @@ export async function updateCompanySettings(
   if (input.address !== undefined) clean.address = input.address.trim().slice(0, 240);
   if (input.sector !== undefined) clean.sector = input.sector.trim().slice(0, 80);
   if (input.logoUrl !== undefined) clean.logoUrl = input.logoUrl.trim().slice(0, 1000);
-  if (input.monthlyGoal !== undefined) clean.monthlyGoal = Math.max(0, Number(input.monthlyGoal));
   try {
     await updateDoc(doc(db, 'companies', companyId), clean);
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `companies/${companyId}`);
+  }
+}
+
+export function subscribeCompanyGoal(
+  companyId: string,
+  onData: (monthlyGoal: number | null) => void
+): Unsubscribe {
+  const goalRef = doc(db, 'company_goals', companyId);
+  return onSnapshot(
+    goalRef,
+    (snap) => {
+      if (snap.exists()) {
+        const val = Number((snap.data() as { monthlyGoal?: number }).monthlyGoal);
+        onData(Number.isFinite(val) ? val : 0);
+      } else {
+        onData(null);
+      }
+    },
+    (err) => {
+      console.warn('Erro ao observar meta privada:', err);
+    }
+  );
+}
+
+export async function saveCompanyGoal(
+  companyId: string,
+  userId: string,
+  monthlyGoal: number
+): Promise<void> {
+  const goalRef = doc(db, 'company_goals', companyId);
+  const cleanGoal = Math.max(0, Number(monthlyGoal) || 0);
+  try {
+    const existing = await getDoc(goalRef);
+    if (existing.exists()) {
+      await updateDoc(goalRef, {
+        monthlyGoal: cleanGoal,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(goalRef, {
+        companyId,
+        userId,
+        monthlyGoal: cleanGoal,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `company_goals/${companyId}`);
   }
 }
 

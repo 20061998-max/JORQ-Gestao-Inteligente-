@@ -32,6 +32,7 @@ import type {
 
 interface OverviewTabProps {
   company: Company;
+  monthlyGoal?: number;
   revenues: Revenue[];
   expenses: Expense[];
   transactions: LedgerTransaction[];
@@ -52,6 +53,7 @@ const EXPENSE_SLICE_COLORS = [
 
 export function OverviewTab({
   company,
+  monthlyGoal,
   revenues,
   expenses,
   transactions,
@@ -80,7 +82,7 @@ export function OverviewTab({
       .filter((r) => (r.date || '').startsWith(currentMonthKey))
       .reduce((acc, r) => acc + (Number(r.amount) || 0), 0);
 
-    const goal = Number(company.monthlyGoal) || 0;
+    const goal = Number(monthlyGoal ?? company.monthlyGoal) || 0;
     const goalPercent = goal > 0 ? Math.min(100, (monthRevenue / goal) * 100) : 0;
 
     return {
@@ -93,7 +95,7 @@ export function OverviewTab({
       goal,
       goalPercent,
     };
-  }, [revenues, expenses, company.monthlyGoal]);
+  }, [revenues, expenses, monthlyGoal, company.monthlyGoal]);
 
   // Build monthly chart data with semaphoric status per month
   const monthlyData = useMemo(() => {

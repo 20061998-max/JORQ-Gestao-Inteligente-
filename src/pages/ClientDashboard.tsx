@@ -26,6 +26,7 @@ import { LanguageSelector } from '../components/LanguageSelector';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 import {
   subscribeCompanyCollection,
+  subscribeCompanyGoal,
   subscribePublicPlans,
   subscribeUserNotifications,
   type AppNotification,
@@ -92,6 +93,7 @@ export function ClientDashboard({
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [privateGoal, setPrivateGoal] = useState<number | null>(null);
   const [serverAccessVerified, setServerAccessVerified] = useState(false);
   const [accessChecked, setAccessChecked] = useState(isAdmin);
   const [subsLoaded, setSubsLoaded] = useState(false);
@@ -247,6 +249,7 @@ export function ClientDashboard({
       subscribeCompanyCollection<ServiceItem>('services', company.id, firebaseUser.uid, setServices),
       subscribeCompanyCollection<CustomerClient>('clients', company.id, firebaseUser.uid, setClients),
       subscribeCompanyCollection<SavedReport>('reports', company.id, firebaseUser.uid, setSavedReports),
+      subscribeCompanyGoal(company.id, setPrivateGoal),
     ];
 
     return () => {
@@ -256,6 +259,7 @@ export function ClientDashboard({
 
   if (!company || !firebaseUser) return null;
 
+  const effectiveMonthlyGoal = privateGoal ?? company.monthlyGoal ?? 0;
   const latestSubWithMp = subscriptions.find((s) => Boolean(s.mpPreapprovalId));
 
   const handlePaywallVerifyNow = async () => {
@@ -622,6 +626,7 @@ export function ClientDashboard({
               {activeTab === 'overview' && (
                 <OverviewTab
                   company={company}
+                  monthlyGoal={effectiveMonthlyGoal}
                   revenues={revenues}
                   expenses={expenses}
                   transactions={transactions}
@@ -667,6 +672,7 @@ export function ClientDashboard({
                 <ReportsAiTab
                   mode="reports"
                   company={company}
+                  monthlyGoal={effectiveMonthlyGoal}
                   userId={firebaseUser.uid}
                   revenues={revenues}
                   expenses={expenses}
@@ -682,6 +688,7 @@ export function ClientDashboard({
                 <ReportsAiTab
                   mode="ai"
                   company={company}
+                  monthlyGoal={effectiveMonthlyGoal}
                   userId={firebaseUser.uid}
                   revenues={revenues}
                   expenses={expenses}
@@ -697,6 +704,7 @@ export function ClientDashboard({
                 <SubscriptionSettingsTab
                   mode="settings"
                   company={company}
+                  companyGoal={effectiveMonthlyGoal}
                   userId={firebaseUser.uid}
                   userEmail={firebaseUser.email || ''}
                   plans={plans}

@@ -233,9 +233,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (payload.phone?.trim()) cleanData.phone = payload.phone.trim().slice(0, 32);
     if (payload.address?.trim()) cleanData.address = payload.address.trim().slice(0, 240);
     if (payload.sector?.trim()) cleanData.sector = payload.sector.trim().slice(0, 80);
-    if (typeof payload.monthlyGoal === 'number' && payload.monthlyGoal >= 0) {
-      cleanData.monthlyGoal = payload.monthlyGoal;
-    }
 
     try {
       await setDoc(doc(db, 'companies', companyId), cleanData);
@@ -249,6 +246,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      if (typeof payload.monthlyGoal === 'number' && payload.monthlyGoal >= 0) {
+        await setDoc(doc(db, 'company_goals', companyId), {
+          companyId,
+          userId: uid,
+          monthlyGoal: payload.monthlyGoal,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
       await updateDoc(doc(db, 'users', uid), {
         companyId,
         updatedAt: serverTimestamp(),

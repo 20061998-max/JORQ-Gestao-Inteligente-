@@ -39,6 +39,7 @@ import { formatBRL, formatDateBR } from '../../utils/format';
 interface ReportsAiTabProps {
   mode: 'reports' | 'ai';
   company: Company;
+  monthlyGoal?: number;
   userId: string;
   revenues: Revenue[];
   expenses: Expense[];
@@ -53,6 +54,7 @@ interface ReportsAiTabProps {
 export function ReportsAiTab({
   mode,
   company,
+  monthlyGoal,
   userId,
   revenues,
   expenses,
@@ -211,7 +213,7 @@ export function ReportsAiTab({
           preapprovalId: activeSubscription?.mpPreapprovalId,
           companyName: company.name,
           sector: company.sector || 'Geral',
-          monthlyGoal: company.monthlyGoal || 0,
+          monthlyGoal: monthlyGoal ?? company.monthlyGoal ?? 0,
           mode: selectedMode,
           question: aiQuestion,
           language: lang,

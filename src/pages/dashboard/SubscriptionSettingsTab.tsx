@@ -15,6 +15,7 @@ import {
   createPendingSubscriptionRecord,
   markNotificationRead,
   markSubscriptionCancelledClient,
+  saveCompanyGoal,
   updateCompanySettings,
   uploadCompanyLogo,
   type AppNotification,
@@ -35,6 +36,7 @@ import type { BillingCycle } from '../../types';
 interface SubscriptionSettingsTabProps {
   mode: 'subscription' | 'settings' | 'notifications';
   company: Company;
+  companyGoal?: number;
   userId: string;
   userEmail: string;
   plans: Plan[];
@@ -50,6 +52,7 @@ interface SubscriptionSettingsTabProps {
 export function SubscriptionSettingsTab({
   mode,
   company,
+  companyGoal,
   userId,
   userEmail,
   plans,
@@ -84,11 +87,17 @@ export function SubscriptionSettingsTab({
   const [phone, setPhone] = useState(company.phone || '');
   const [address, setAddress] = useState(company.address || '');
   const [sector, setSector] = useState(company.sector || '');
-  const [monthlyGoal, setMonthlyGoal] = useState(String(company.monthlyGoal || 0));
+  const [monthlyGoal, setMonthlyGoal] = useState(String(companyGoal ?? company.monthlyGoal ?? 0));
   const [logoUrl, setLogoUrl] = useState(company.logoUrl || '');
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState('');
+
+  useEffect(() => {
+    if (typeof companyGoal === 'number') {
+      setMonthlyGoal(String(companyGoal));
+    }
+  }, [companyGoal]);
 
   useEffect(() => {
     if (!selectedPlanId && plans.length > 0) {
@@ -371,8 +380,8 @@ export function SubscriptionSettingsTab({
         address,
         sector,
         logoUrl,
-        monthlyGoal: Number(monthlyGoal) || 0,
       });
+      await saveCompanyGoal(company.id, userId, Number(monthlyGoal) || 0);
       await refreshCompany();
       setSettingsMsg(
         pick({

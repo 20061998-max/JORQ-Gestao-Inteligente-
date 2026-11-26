@@ -47,6 +47,19 @@
       },
       "required": ["ownerId", "name", "status", "createdAt", "updatedAt"]
     },
+    "CompanyGoal": {
+      "title": "CompanyGoal",
+      "description": "Private monthly financial goal isolated strictly to the company owner.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "monthlyGoal": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "userId", "monthlyGoal", "createdAt", "updatedAt"]
+    },
     "CompanyMember": {
       "title": "CompanyMember",
       "description": "Company membership linking user to company tenant.",
@@ -337,7 +350,11 @@
     },
     "/companies/{companyId}": {
       "schema": { "$ref": "#/entities/Company" },
-      "description": "Tenant company profiles."
+      "description": "Tenant company directory profiles."
+    },
+    "/company_goals/{companyId}": {
+      "schema": { "$ref": "#/entities/CompanyGoal" },
+      "description": "Private company financial goals inaccessible to platform admins."
     },
     "/company_members/{memberId}": {
       "schema": { "$ref": "#/entities/CompanyMember" },

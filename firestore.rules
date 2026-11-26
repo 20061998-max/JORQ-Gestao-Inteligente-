@@ -98,6 +98,16 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidCompanyGoal(data) {
+      return data.keys().hasAll(['companyId', 'userId', 'monthlyGoal', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['companyId', 'userId', 'monthlyGoal', 'createdAt', 'updatedAt']) &&
+        isValidId(data.companyId) &&
+        isValidId(data.userId) &&
+        data.monthlyGoal is number && data.monthlyGoal >= 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     function isValidCompanyMember(data) {
       return data.keys().hasAll(['companyId', 'userId', 'email', 'name', 'role', 'status', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['companyId', 'userId', 'email', 'name', 'role', 'status', 'createdAt', 'updatedAt']) &&
@@ -376,16 +386,42 @@ service cloud.firestore {
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
       allow update: if isValidId(companyId) && isValidCompany(incoming()) && (
-        isAdmin() ||
+        (
+          isAdmin() &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+        ) ||
         (
           isCompanyOwner(companyId) &&
           incoming().ownerId == existing().ownerId &&
           incoming().status == existing().status &&
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'tradeName', 'document', 'phone', 'address', 'sector', 'logoUrl', 'monthlyGoal', 'updatedAt'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'tradeName', 'document', 'phone', 'address', 'sector', 'logoUrl', 'updatedAt'])
         )
       );
+      allow delete: if false;
+    }
+
+    // 3b. Private Company Goals (Client owner only — Admin has ZERO read/write access)
+    match /company_goals/{companyId} {
+      allow get: if isValidId(companyId) && isCompanyOwner(companyId);
+      allow list: if isVerified() && existing().userId == request.auth.uid;
+      allow create: if isValidId(companyId) && isVerified() && isValidCompanyGoal(incoming()) &&
+        incoming().companyId == companyId &&
+        incoming().userId == request.auth.uid &&
+        isCompanyOwner(companyId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(companyId) && isVerified() && isValidCompanyGoal(incoming()) &&
+        existing().userId == request.auth.uid &&
+        incoming().companyId == existing().companyId &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['monthlyGoal', 'updatedAt']);
       allow delete: if false;
     }
 
@@ -488,143 +524,123 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // 9. Revenues
+    // 9. Revenues (Private per company owner — no admin access)
     match /revenues/{revenueId} {
-      allow get: if isValidId(revenueId) && (existing().userId == request.auth.uid || isAdmin());
-      allow list: if isVerified() && (existing().userId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(revenueId) && isVerified() && existing().userId == request.auth.uid;
+      allow list: if isVerified() && existing().userId == request.auth.uid;
       allow create: if isValidId(revenueId) && isVerified() && isValidRevenue(incoming()) &&
         incoming().userId == request.auth.uid &&
         isCompanyOwner(incoming().companyId) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
-      allow update: if isValidId(revenueId) && isVerified() && isValidRevenue(incoming()) && (
-        isAdmin() ||
-        (
-          existing().userId == request.auth.uid &&
-          incoming().companyId == existing().companyId &&
-          incoming().userId == existing().userId &&
-          incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['description', 'category', 'amount', 'date', 'customerName', 'status', 'paymentMethod', 'notes', 'updatedAt'])
-        )
-      );
-      allow delete: if isValidId(revenueId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
+      allow update: if isValidId(revenueId) && isVerified() && isValidRevenue(incoming()) &&
+        existing().userId == request.auth.uid &&
+        incoming().companyId == existing().companyId &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['description', 'category', 'amount', 'date', 'customerName', 'status', 'paymentMethod', 'notes', 'updatedAt']);
+      allow delete: if isValidId(revenueId) && isVerified() && existing().userId == request.auth.uid;
     }
 
-    // 10. Expenses
+    // 10. Expenses (Private per company owner — no admin access)
     match /expenses/{expenseId} {
-      allow get: if isValidId(expenseId) && (existing().userId == request.auth.uid || isAdmin());
-      allow list: if isVerified() && (existing().userId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(expenseId) && isVerified() && existing().userId == request.auth.uid;
+      allow list: if isVerified() && existing().userId == request.auth.uid;
       allow create: if isValidId(expenseId) && isVerified() && isValidExpense(incoming()) &&
         incoming().userId == request.auth.uid &&
         isCompanyOwner(incoming().companyId) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
-      allow update: if isValidId(expenseId) && isVerified() && isValidExpense(incoming()) && (
-        isAdmin() ||
-        (
-          existing().userId == request.auth.uid &&
-          incoming().companyId == existing().companyId &&
-          incoming().userId == existing().userId &&
-          incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['description', 'category', 'amount', 'date', 'supplierName', 'status', 'paymentMethod', 'notes', 'updatedAt'])
-        )
-      );
-      allow delete: if isValidId(expenseId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
+      allow update: if isValidId(expenseId) && isVerified() && isValidExpense(incoming()) &&
+        existing().userId == request.auth.uid &&
+        incoming().companyId == existing().companyId &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['description', 'category', 'amount', 'date', 'supplierName', 'status', 'paymentMethod', 'notes', 'updatedAt']);
+      allow delete: if isValidId(expenseId) && isVerified() && existing().userId == request.auth.uid;
     }
 
-    // 11. Transactions
+    // 11. Transactions (Private per company owner — no admin access)
     match /transactions/{transactionId} {
-      allow get: if isValidId(transactionId) && (existing().userId == request.auth.uid || isAdmin());
-      allow list: if isVerified() && (existing().userId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(transactionId) && isVerified() && existing().userId == request.auth.uid;
+      allow list: if isVerified() && existing().userId == request.auth.uid;
       allow create: if isValidId(transactionId) && isVerified() && isValidTransaction(incoming()) &&
         incoming().userId == request.auth.uid &&
         isCompanyOwner(incoming().companyId) &&
         incoming().createdAt == request.time;
       allow update: if false;
-      allow delete: if isValidId(transactionId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
+      allow delete: if isValidId(transactionId) && isVerified() && existing().userId == request.auth.uid;
     }
 
-    // 12. Products
+    // 12. Products (Private per company owner — no admin access)
     match /products/{productId} {
-      allow get: if isValidId(productId) && (existing().userId == request.auth.uid || isAdmin());
-      allow list: if isVerified() && (existing().userId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(productId) && isVerified() && existing().userId == request.auth.uid;
+      allow list: if isVerified() && existing().userId == request.auth.uid;
       allow create: if isValidId(productId) && isVerified() && isValidProduct(incoming()) &&
         incoming().userId == request.auth.uid &&
         isCompanyOwner(incoming().companyId) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
-      allow update: if isValidId(productId) && isVerified() && isValidProduct(incoming()) && (
-        isAdmin() ||
-        (
-          existing().userId == request.auth.uid &&
-          incoming().companyId == existing().companyId &&
-          incoming().userId == existing().userId &&
-          incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'sku', 'category', 'price', 'cost', 'stock', 'unit', 'active', 'updatedAt'])
-        )
-      );
-      allow delete: if isValidId(productId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
+      allow update: if isValidId(productId) && isVerified() && isValidProduct(incoming()) &&
+        existing().userId == request.auth.uid &&
+        incoming().companyId == existing().companyId &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'sku', 'category', 'price', 'cost', 'stock', 'unit', 'active', 'updatedAt']);
+      allow delete: if isValidId(productId) && isVerified() && existing().userId == request.auth.uid;
     }
 
-    // 13. Services
+    // 13. Services (Private per company owner — no admin access)
     match /services/{serviceId} {
-      allow get: if isValidId(serviceId) && (existing().userId == request.auth.uid || isAdmin());
-      allow list: if isVerified() && (existing().userId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(serviceId) && isVerified() && existing().userId == request.auth.uid;
+      allow list: if isVerified() && existing().userId == request.auth.uid;
       allow create: if isValidId(serviceId) && isVerified() && isValidService(incoming()) &&
         incoming().userId == request.auth.uid &&
         isCompanyOwner(incoming().companyId) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
-      allow update: if isValidId(serviceId) && isVerified() && isValidService(incoming()) && (
-        isAdmin() ||
-        (
-          existing().userId == request.auth.uid &&
-          incoming().companyId == existing().companyId &&
-          incoming().userId == existing().userId &&
-          incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'price', 'estimatedCost', 'billingUnit', 'active', 'updatedAt'])
-        )
-      );
-      allow delete: if isValidId(serviceId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
+      allow update: if isValidId(serviceId) && isVerified() && isValidService(incoming()) &&
+        existing().userId == request.auth.uid &&
+        incoming().companyId == existing().companyId &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'price', 'estimatedCost', 'billingUnit', 'active', 'updatedAt']);
+      allow delete: if isValidId(serviceId) && isVerified() && existing().userId == request.auth.uid;
     }
 
-    // 14. Clients (Tenant CRM Customers)
+    // 14. Clients (Private Tenant CRM Customers — no admin access)
     match /clients/{clientId} {
-      allow get: if isValidId(clientId) && (existing().userId == request.auth.uid || isAdmin());
-      allow list: if isVerified() && (existing().userId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(clientId) && isVerified() && existing().userId == request.auth.uid;
+      allow list: if isVerified() && existing().userId == request.auth.uid;
       allow create: if isValidId(clientId) && isVerified() && isValidClient(incoming()) &&
         incoming().userId == request.auth.uid &&
         isCompanyOwner(incoming().companyId) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
-      allow update: if isValidId(clientId) && isVerified() && isValidClient(incoming()) && (
-        isAdmin() ||
-        (
-          existing().userId == request.auth.uid &&
-          incoming().companyId == existing().companyId &&
-          incoming().userId == existing().userId &&
-          incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'document', 'email', 'phone', 'city', 'status', 'notes', 'updatedAt'])
-        )
-      );
-      allow delete: if isValidId(clientId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
+      allow update: if isValidId(clientId) && isVerified() && isValidClient(incoming()) &&
+        existing().userId == request.auth.uid &&
+        incoming().companyId == existing().companyId &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'document', 'email', 'phone', 'city', 'status', 'notes', 'updatedAt']);
+      allow delete: if isValidId(clientId) && isVerified() && existing().userId == request.auth.uid;
     }
 
-    // 15. Reports
+    // 15. Reports (Private per company owner — no admin access)
     match /reports/{reportId} {
-      allow get: if isValidId(reportId) && (existing().userId == request.auth.uid || isAdmin());
-      allow list: if isVerified() && (existing().userId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(reportId) && isVerified() && existing().userId == request.auth.uid;
+      allow list: if isVerified() && existing().userId == request.auth.uid;
       allow create: if isValidId(reportId) && isVerified() && isValidReport(incoming()) &&
         incoming().userId == request.auth.uid &&
         isCompanyOwner(incoming().companyId) &&
         incoming().createdAt == request.time;
       allow update: if false;
-      allow delete: if isValidId(reportId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
+      allow delete: if isValidId(reportId) && isVerified() && existing().userId == request.auth.uid;
     }
 
     // 16. Notifications
@@ -652,9 +668,9 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // 18. System Settings
+    // 18. System Settings (Admin-only)
     match /system_settings/{settingId} {
-      allow get: if isValidId(settingId) && isSignedIn();
+      allow get: if isValidId(settingId) && isAdmin();
       allow list: if isBootstrappedAdmin();
       allow create, update: if isValidId(settingId) && isAdmin() && isValidSystemSetting(incoming()) &&
         incoming().updatedAt == request.time;
