@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
 import { AlertCircle, CheckCircle2, Mail, RefreshCw } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useLanguage } from '../contexts/LanguageContext';
 import { JorqLogo } from '../components/JorqLogo';
 
 type AuthMode = 'login' | 'register' | 'reset';
 
 export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
+  const { t } = useLanguage();
+  const a = t.auth;
   const {
     firebaseUser,
     emailVerified,
@@ -34,13 +37,10 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
           <div className="w-11 h-11 rounded-lg bg-blue-50 text-[#1E40AF] flex items-center justify-center mb-4">
             <Mail className="w-5 h-5" />
           </div>
-          <h1 className="font-display text-2xl font-bold text-[#0F172A]">
-            Confirme seu e-mail para liberar o painel
-          </h1>
+          <h1 className="font-display text-2xl font-bold text-[#0F172A]">{a.verifyTitle}</h1>
           <p className="mt-2 text-sm text-slate-600 leading-relaxed">
-            Enviamos um link de verificação para{' '}
-            <strong className="text-slate-900">{firebaseUser.email}</strong>. Por segurança
-            multi-empresa, o acesso aos dados só é liberado após confirmar o endereço de e-mail.
+            {a.verifySentTo} <strong className="text-slate-900">{firebaseUser.email}</strong>.{' '}
+            {a.verifyReason}
           </p>
 
           {errorMsg && (
@@ -64,9 +64,9 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
                 setInfoMsg('');
                 try {
                   await refreshSession();
-                  setInfoMsg('Sessão atualizada. Se o e-mail já foi confirmado, você entrará agora.');
+                  setInfoMsg(a.verifyRefreshed);
                 } catch (err) {
-                  setErrorMsg(err instanceof Error ? err.message : 'Erro ao verificar sessão.');
+                  setErrorMsg(err instanceof Error ? err.message : a.verifyCheckErr);
                 } finally {
                   setBusy(false);
                 }
@@ -74,7 +74,7 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
               className="inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] disabled:opacity-50 cursor-pointer"
             >
               <RefreshCw className="w-4 h-4" />
-              <span>Já verifiquei meu e-mail</span>
+              <span>{a.verifyCheckedBtn}</span>
             </button>
             <button
               type="button"
@@ -85,18 +85,16 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
                 setInfoMsg('');
                 try {
                   await resendVerification();
-                  setInfoMsg('E-mail de verificação reenviado. Confira sua caixa de entrada e spam.');
+                  setInfoMsg(a.verifyResent);
                 } catch (err) {
-                  setErrorMsg(
-                    err instanceof Error ? err.message : 'Aguarde alguns instantes antes de reenviar.'
-                  );
+                  setErrorMsg(err instanceof Error ? err.message : a.verifyWaitErr);
                 } finally {
                   setBusy(false);
                 }
               }}
               className="px-4 py-2.5 text-sm font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
             >
-              Reenviar link
+              {a.verifyResendBtn}
             </button>
           </div>
           <button
@@ -104,7 +102,7 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
             onClick={() => logout()}
             className="mt-5 text-xs font-medium text-slate-500 hover:text-slate-800 cursor-pointer"
           >
-            Sair desta conta
+            {t.common.logout}
           </button>
         </div>
       </div>
@@ -115,19 +113,19 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
     const code = (err as { code?: string })?.code || '';
     switch (code) {
       case 'auth/operation-not-allowed':
-        return 'O login por E-mail/Senha ainda não foi ativado no Console do Firebase (Authentication > Sign-in method). Ative o provedor ou entre com Google.';
+        return a.errOpNotAllowed;
       case 'auth/invalid-credential':
       case 'auth/wrong-password':
       case 'auth/user-not-found':
-        return 'E-mail ou senha inválidos.';
+        return a.errInvalidCred;
       case 'auth/email-already-in-use':
-        return 'Este e-mail já possui cadastro. Faça login ou recupere sua senha.';
+        return a.errEmailInUse;
       case 'auth/weak-password':
-        return 'A senha deve ter pelo menos 6 caracteres.';
+        return a.errWeakPass;
       case 'auth/popup-closed-by-user':
-        return 'A janela de login com Google foi fechada antes da conclusão.';
+        return a.errPopupClosed;
       default:
-        return err instanceof Error ? err.message : 'Não foi possível concluir a autenticação.';
+        return err instanceof Error ? err.message : a.errGeneric;
     }
   };
 
@@ -142,15 +140,15 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
         onSuccess?.();
       } else if (mode === 'register') {
         if (name.trim().length < 2) {
-          setErrorMsg('Informe seu nome completo.');
+          setErrorMsg(a.nameError);
           setBusy(false);
           return;
         }
         await registerWithEmail(name, email, password);
-        setInfoMsg('Conta criada. Verifique seu e-mail para ativar o acesso.');
+        setInfoMsg(a.registerSuccess);
       } else {
         await resetPassword(email);
-        setInfoMsg('Enviamos as instruções de redefinição de senha para o seu e-mail.');
+        setInfoMsg(a.resetSuccess);
       }
     } catch (err) {
       setErrorMsg(formatFirebaseAuthError(err));
@@ -179,18 +177,14 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
         <div className="mb-6">
           <JorqLogo showFullTitle />
           <h1 className="mt-4 font-display text-2xl font-bold text-[#0F172A]">
-            {mode === 'login'
-              ? 'Acessar sua conta'
-              : mode === 'register'
-              ? 'Cadastrar empresa e gestor'
-              : 'Recuperar senha'}
+            {mode === 'login' ? a.loginTitle : mode === 'register' ? a.registerTitle : a.resetTitle}
           </h1>
           <p className="mt-1 text-sm text-slate-600">
             {mode === 'login'
-              ? 'Entre para gerenciar suas finanças ou acessar a administração.'
+              ? a.loginSubtitle
               : mode === 'register'
-              ? 'Crie seu acesso individual com verificação de e-mail.'
-              : 'Informe seu e-mail cadastrado para receber o link de redefinição.'}
+              ? a.registerSubtitle
+              : a.resetSubtitle}
           </p>
         </div>
 
@@ -207,7 +201,7 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
               mode === 'login' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
             }`}
           >
-            Entrar
+            {a.tabLogin}
           </button>
           <button
             type="button"
@@ -220,7 +214,7 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
               mode === 'register' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
             }`}
           >
-            Cadastrar
+            {a.tabRegister}
           </button>
           <button
             type="button"
@@ -233,7 +227,7 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
               mode === 'reset' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
             }`}
           >
-            Recuperar
+            {a.tabReset}
           </button>
         </div>
 
@@ -254,14 +248,14 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
           {mode === 'register' && (
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Nome completo
+                {a.fullNameLabel}
               </label>
               <input
                 type="text"
                 required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Ex: Maria Oliveira"
+                placeholder={a.fullNamePlaceholder}
                 className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-[#1E40AF]"
               />
             </div>
@@ -269,28 +263,30 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
 
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
-              E-mail corporativo ou pessoal
+              {a.emailLabel}
             </label>
             <input
               type="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="nome@empresa.com.br"
+              placeholder={a.emailPlaceholder}
               className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-[#1E40AF]"
             />
           </div>
 
           {mode !== 'reset' && (
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Senha</label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {a.passwordLabel}
+              </label>
               <input
                 type="password"
                 required
                 minLength={6}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Mínimo de 6 caracteres"
+                placeholder={a.passwordPlaceholder}
                 className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-[#1E40AF]"
               />
             </div>
@@ -302,18 +298,18 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
             className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] disabled:opacity-50 transition-colors cursor-pointer"
           >
             {busy
-              ? 'Processando...'
+              ? a.processing
               : mode === 'login'
-              ? 'Entrar com E-mail'
+              ? a.submitLogin
               : mode === 'register'
-              ? 'Criar Conta'
-              : 'Enviar Link de Recuperação'}
+              ? a.submitRegister
+              : a.submitReset}
           </button>
         </form>
 
         <div className="my-5 flex items-center gap-3">
           <div className="flex-1 h-px bg-slate-200" />
-          <span className="text-xs text-slate-400">ou</span>
+          <span className="text-xs text-slate-400">{a.orSeparator}</span>
           <div className="flex-1 h-px bg-slate-200" />
         </div>
 
@@ -341,7 +337,7 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
               d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
             />
           </svg>
-          <span>Continuar com Google</span>
+          <span>{a.googleBtn}</span>
         </button>
       </div>
     </div>

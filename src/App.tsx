@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { LanguageProvider, useLanguage } from './contexts/LanguageContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { SiteBackground } from './components/SiteBackground';
+import { OwnerSignatureStamp } from './components/JorqLogo';
+import { OfflineIndicator } from './components/OfflineIndicator';
 import { PublicLayout, type PublicRoute } from './components/PublicLayout';
 import { LandingPage } from './pages/LandingPage';
 import { ResourcesPage } from './pages/ResourcesPage';
@@ -14,6 +18,7 @@ import type { BillingCycle, Plan } from './types';
 
 function AppRouter() {
   const { firebaseUser, emailVerified, company, isAdmin, authReady } = useAuth();
+  const { t } = useLanguage();
   const [publicRoute, setPublicRoute] = useState<PublicRoute>('home');
   const [inWorkspace, setInWorkspace] = useState(false);
   const [viewMode, setViewMode] = useState<'client' | 'admin'>('client');
@@ -25,8 +30,10 @@ function AppRouter() {
 
   if (!authReady) {
     return (
-      <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center">
-        <div className="text-sm font-medium text-slate-600">Carregando JORQ Gestão Inteligente...</div>
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="px-5 py-3 rounded-xl bg-slate-950/75 backdrop-blur-md border border-white/15 text-sm font-medium text-white shadow-lg">
+          {t.common.loadingApp}
+        </div>
       </div>
     );
   }
@@ -209,9 +216,14 @@ function AppRouter() {
 export default function App() {
   return (
     <ErrorBoundary>
-      <AuthProvider>
-        <AppRouter />
-      </AuthProvider>
+      <LanguageProvider>
+        <AuthProvider>
+          <SiteBackground />
+          <AppRouter />
+          <OfflineIndicator />
+          <OwnerSignatureStamp />
+        </AuthProvider>
+      </LanguageProvider>
     </ErrorBoundary>
   );
 }

@@ -37,7 +37,10 @@ import {
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useLanguage } from '../contexts/LanguageContext';
 import { JorqLogo } from '../components/JorqLogo';
+import { LanguageSelector } from '../components/LanguageSelector';
+import { PWAInstallButton } from '../components/PWAInstallButton';
 import { SEMANTIC_COLORS, SemanticChartLegend } from '../components/SemanticChartLegend';
 import {
   adminDeleteCoupon,
@@ -120,6 +123,7 @@ export function AdminDashboard({
   onEnterClientMode?: () => void;
 }) {
   const { firebaseUser, isAdmin, logout, getIdToken } = useAuth();
+  const { t: i18n, pick } = useLanguage();
   const [activeTab, setActiveTab] = useState<AdminTabId>('executive');
   const [securityStatus, setSecurityStatus] = useState<SecurityStatusResponse | null>(null);
   const [loadingSecurity, setLoadingSecurity] = useState(false);
@@ -318,7 +322,7 @@ export function AdminDashboard({
 
   if (!isAdmin || !firebaseUser) {
     return (
-      <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-6">
+      <div className="min-h-screen flex items-center justify-center p-6">
         <div className="bg-white border border-slate-200 rounded-xl p-8 max-w-md text-center">
           <h1 className="font-display text-xl font-bold text-slate-900">Acesso Restrito</h1>
           <p className="mt-2 text-sm text-slate-600">
@@ -459,18 +463,18 @@ export function AdminDashboard({
   };
 
   const navTabs: { id: AdminTabId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-    { id: 'executive', label: 'Visão Executiva', icon: BarChart3 },
-    { id: 'clients', label: 'Empresas e Clientes', icon: Building2 },
-    { id: 'plans', label: 'Planos e Preços', icon: CreditCard },
-    { id: 'coupons', label: 'Cupons', icon: Tag },
-    { id: 'billing', label: 'Pagamentos e Webhooks', icon: Activity },
-    { id: 'security', label: 'Segurança e Blindagem', icon: Lock },
-    { id: 'audit', label: 'Registros de Auditoria', icon: FileSearch },
-    { id: 'settings', label: 'Configurações Gerais', icon: Settings },
+    { id: 'executive', label: i18n.adminNav.executive, icon: BarChart3 },
+    { id: 'clients', label: i18n.adminNav.clients, icon: Building2 },
+    { id: 'plans', label: i18n.adminNav.plans, icon: CreditCard },
+    { id: 'coupons', label: i18n.adminNav.coupons, icon: Tag },
+    { id: 'billing', label: i18n.adminNav.billing, icon: Activity },
+    { id: 'security', label: i18n.adminNav.security, icon: Lock },
+    { id: 'audit', label: i18n.adminNav.audit, icon: FileSearch },
+    { id: 'settings', label: i18n.adminNav.settings, icon: Settings },
   ];
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] flex">
+    <div className="min-h-screen bg-[#F8FAFC]/82 backdrop-blur-[2px] flex">
       <aside className="w-64 bg-[#0F172A] text-white flex flex-col shrink-0">
         <div className="h-16 px-5 border-b border-slate-800 flex items-center justify-between">
           <JorqLogo dark />
@@ -478,7 +482,7 @@ export function AdminDashboard({
         <div className="px-5 py-4 border-b border-slate-800">
           <div className="flex items-center gap-2 text-xs font-semibold text-blue-300">
             <ShieldCheck className="w-4 h-4" />
-            <span>Administração JORQ</span>
+            <span>{i18n.adminNav.brandSubtitle}</span>
           </div>
           <p className="mt-1 text-xs text-slate-400 truncate">{firebaseUser.email}</p>
         </div>
@@ -509,7 +513,7 @@ export function AdminDashboard({
               className="w-full flex items-center gap-2 px-3 py-2.5 text-xs font-semibold text-emerald-300 bg-emerald-950/50 border border-emerald-800/70 hover:bg-emerald-900/60 rounded-lg cursor-pointer"
             >
               <Briefcase className="w-4 h-4 shrink-0" />
-              <span className="truncate">Modo Cliente (Gratuito)</span>
+              <span className="truncate">{i18n.adminNav.clientModeFree}</span>
             </button>
           )}
           {onBackToClient && (
@@ -519,7 +523,7 @@ export function AdminDashboard({
               className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg cursor-pointer"
             >
               <ArrowLeft className="w-4 h-4" />
-              <span>Voltar ao Início</span>
+              <span>{i18n.adminNav.publicSite}</span>
             </button>
           )}
           <button
@@ -528,21 +532,29 @@ export function AdminDashboard({
             className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg cursor-pointer"
           >
             <LogOut className="w-4 h-4" />
-            <span>Sair</span>
+            <span>{i18n.common.signOutShort}</span>
           </button>
         </div>
       </aside>
 
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 bg-white border-b border-slate-200 px-8 flex items-center justify-between gap-4">
+        <header className="h-16 bg-white border-b border-slate-200 px-6 lg:px-8 flex items-center justify-between gap-4">
           <h1 className="font-display text-lg font-bold text-[#0F172A] truncate">
             {navTabs.find((t) => t.id === activeTab)?.label}
           </h1>
-          <div className="flex items-center gap-4 shrink-0">
+          <div className="flex items-center gap-3 shrink-0">
+            <LanguageSelector compact />
+            <PWAInstallButton compact />
             <div className="hidden sm:flex items-center gap-3 text-xs text-slate-500 font-mono tabular-nums">
-              <span>{companies.length} empresas</span>
+              <span>
+                {companies.length}{' '}
+                {pick({ pt: 'empresas', en: 'companies', es: 'empresas', fr: 'entreprises' })}
+              </span>
               <span>·</span>
-              <span>{users.length} usuários</span>
+              <span>
+                {users.length}{' '}
+                {pick({ pt: 'usuários', en: 'users', es: 'usuarios', fr: 'utilisateurs' })}
+              </span>
             </div>
             {onEnterClientMode && (
               <button
@@ -551,7 +563,7 @@ export function AdminDashboard({
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Briefcase className="w-3.5 h-3.5" />
-                <span>Modo Cliente (Gratuito)</span>
+                <span>{i18n.adminNav.clientModeFree}</span>
               </button>
             )}
           </div>

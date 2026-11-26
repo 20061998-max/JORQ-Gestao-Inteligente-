@@ -12,6 +12,7 @@ import {
   type ServiceItem,
 } from '../../services/firestoreService';
 import { formatBRL } from '../../utils/format';
+import { useLanguage } from '../../contexts/LanguageContext';
 
 interface CatalogClientsTabProps {
   mode: 'catalog' | 'clients';
@@ -30,6 +31,7 @@ export function CatalogClientsTab({
   services,
   clients,
 }: CatalogClientsTabProps) {
+  const { pick } = useLanguage();
   const [catalogTab, setCatalogTab] = useState<'products' | 'services'>('products');
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -59,7 +61,7 @@ export function CatalogClientsTab({
         await addProduct(companyId, userId, {
           name: itemName,
           sku: itemSku,
-          category: itemCategory || 'Geral',
+          category: itemCategory || pick({ pt: 'Geral', en: 'General', es: 'General', fr: 'Général' }),
           price: Number(itemPrice) || 0,
           cost: Number(itemCost) || 0,
           stock: Math.max(0, Math.round(Number(itemStock) || 0)),
@@ -69,10 +71,10 @@ export function CatalogClientsTab({
       } else {
         await addServiceItem(companyId, userId, {
           name: itemName,
-          category: itemCategory || 'Consultoria',
+          category: itemCategory || pick({ pt: 'Consultoria', en: 'Consulting', es: 'Consultoría', fr: 'Conseil' }),
           price: Number(itemPrice) || 0,
           estimatedCost: Number(itemCost) || 0,
-          billingUnit: itemUnit || 'Mensal',
+          billingUnit: itemUnit || pick({ pt: 'Mensal', en: 'Monthly', es: 'Mensual', fr: 'Mensuel' }),
           active: true,
         });
       }
@@ -149,7 +151,12 @@ export function CatalogClientsTab({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar cliente por nome, e-mail ou cidade..."
+              placeholder={pick({
+                pt: 'Buscar cliente por nome, e-mail ou cidade...',
+                en: 'Search client by name, email, or city...',
+                es: 'Buscar cliente por nombre, correo o ciudad...',
+                fr: 'Rechercher un client par nom, e-mail ou ville...',
+              })}
               className="w-full pl-9 pr-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-[#1E40AF]"
             />
           </div>
@@ -159,7 +166,7 @@ export function CatalogClientsTab({
             className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] cursor-pointer self-start"
           >
             <Plus className="w-4 h-4" />
-            <span>Novo Cliente</span>
+            <span>{pick({ pt: 'Novo Cliente', en: 'New Client', es: 'Nuevo Cliente', fr: 'Nouveau Client' })}</span>
           </button>
         </div>
 
@@ -170,7 +177,7 @@ export function CatalogClientsTab({
           >
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Nome / Razão Social *
+                {pick({ pt: 'Nome / Razão Social *', en: 'Name / Company *', es: 'Nombre / Razón Social *', fr: 'Nom / Raison Sociale *' })}
               </label>
               <input
                 type="text"
@@ -181,7 +188,9 @@ export function CatalogClientsTab({
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">CPF ou CNPJ</label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {pick({ pt: 'CPF ou CNPJ', en: 'Tax ID / Document', es: 'ID Fiscal / Documento', fr: 'N° Fiscal / SIRET' })}
+              </label>
               <input
                 type="text"
                 value={clientDoc}
@@ -190,7 +199,9 @@ export function CatalogClientsTab({
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">E-mail</label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {pick({ pt: 'E-mail', en: 'Email', es: 'Correo', fr: 'E-mail' })}
+              </label>
               <input
                 type="email"
                 value={clientEmail}
@@ -199,7 +210,9 @@ export function CatalogClientsTab({
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Telefone</label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {pick({ pt: 'Telefone', en: 'Phone', es: 'Teléfono', fr: 'Téléphone' })}
+              </label>
               <input
                 type="text"
                 value={clientPhone}
@@ -208,7 +221,9 @@ export function CatalogClientsTab({
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Cidade / UF</label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {pick({ pt: 'Cidade / UF', en: 'City / State', es: 'Ciudad / Estado', fr: 'Ville / Région' })}
+              </label>
               <input
                 type="text"
                 value={clientCity}
@@ -222,14 +237,16 @@ export function CatalogClientsTab({
                 disabled={saving}
                 className="px-4 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg cursor-pointer"
               >
-                {saving ? 'Salvando...' : 'Cadastrar Cliente'}
+                {saving
+                  ? pick({ pt: 'Salvando...', en: 'Saving...', es: 'Guardando...', fr: 'Enregistrement...' })
+                  : pick({ pt: 'Cadastrar Cliente', en: 'Save Client', es: 'Registrar Cliente', fr: 'Ajouter Client' })}
               </button>
               <button
                 type="button"
                 onClick={() => setShowForm(false)}
                 className="px-3 py-2 text-xs font-medium text-slate-600 cursor-pointer"
               >
-                Cancelar
+                {pick({ pt: 'Cancelar', en: 'Cancel', es: 'Cancelar', fr: 'Annuler' })}
               </button>
             </div>
           </form>
@@ -238,19 +255,24 @@ export function CatalogClientsTab({
         <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
           {filteredClients.length === 0 ? (
             <div className="p-10 text-center text-sm text-slate-500">
-              Nenhum cliente cadastrado ainda.
+              {pick({
+                pt: 'Nenhum cliente cadastrado ainda.',
+                en: 'No clients registered yet.',
+                es: 'Aún no hay clientes registrados.',
+                fr: 'Aucun client enregistré pour le moment.',
+              })}
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold text-slate-500">
-                    <th className="py-3 px-5">Cliente</th>
-                    <th className="py-3 px-5">Documento</th>
-                    <th className="py-3 px-5">E-mail</th>
-                    <th className="py-3 px-5">Telefone</th>
-                    <th className="py-3 px-5">Cidade</th>
-                    <th className="py-3 px-5 text-right">Ações</th>
+                    <th className="py-3 px-5">{pick({ pt: 'Cliente', en: 'Client', es: 'Cliente', fr: 'Client' })}</th>
+                    <th className="py-3 px-5">{pick({ pt: 'Documento', en: 'Tax ID', es: 'Documento', fr: 'Identifiant' })}</th>
+                    <th className="py-3 px-5">{pick({ pt: 'E-mail', en: 'Email', es: 'Correo', fr: 'E-mail' })}</th>
+                    <th className="py-3 px-5">{pick({ pt: 'Telefone', en: 'Phone', es: 'Teléfono', fr: 'Téléphone' })}</th>
+                    <th className="py-3 px-5">{pick({ pt: 'Cidade', en: 'City', es: 'Ciudad', fr: 'Ville' })}</th>
+                    <th className="py-3 px-5 text-right">{pick({ pt: 'Ações', en: 'Actions', es: 'Acciones', fr: 'Actions' })}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
@@ -266,7 +288,7 @@ export function CatalogClientsTab({
                       <td className="py-3 px-5 text-right">
                         <button
                           type="button"
-                          aria-label="Remover cliente"
+                          aria-label={pick({ pt: 'Remover cliente', en: 'Remove client', es: 'Eliminar cliente', fr: 'Supprimer client' })}
                           onClick={() => removeCustomerClient(c.id)}
                           className="p-1.5 text-slate-400 hover:text-[#DC2626] cursor-pointer"
                         >
@@ -295,7 +317,7 @@ export function CatalogClientsTab({
               catalogTab === 'products' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
             }`}
           >
-            Produtos ({products.length})
+            {pick({ pt: 'Produtos', en: 'Products', es: 'Productos', fr: 'Produits' })} ({products.length})
           </button>
           <button
             type="button"
@@ -304,7 +326,7 @@ export function CatalogClientsTab({
               catalogTab === 'services' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
             }`}
           >
-            Serviços ({services.length})
+            {pick({ pt: 'Serviços', en: 'Services', es: 'Servicios', fr: 'Services' })} ({services.length})
           </button>
         </div>
 
@@ -314,7 +336,11 @@ export function CatalogClientsTab({
           className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] cursor-pointer self-start"
         >
           <Plus className="w-4 h-4" />
-          <span>{catalogTab === 'products' ? 'Novo Produto' : 'Novo Serviço'}</span>
+          <span>
+            {catalogTab === 'products'
+              ? pick({ pt: 'Novo Produto', en: 'New Product', es: 'Nuevo Producto', fr: 'Nouveau Produit' })
+              : pick({ pt: 'Novo Serviço', en: 'New Service', es: 'Nuevo Servicio', fr: 'Nouveau Service' })}
+          </span>
         </button>
       </div>
 
@@ -324,7 +350,9 @@ export function CatalogClientsTab({
           className="bg-white border border-slate-200 rounded-xl p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
         >
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Nome *</label>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              {pick({ pt: 'Nome *', en: 'Name *', es: 'Nombre *', fr: 'Nom *' })}
+            </label>
             <input
               type="text"
               required
@@ -335,7 +363,9 @@ export function CatalogClientsTab({
           </div>
           {catalogTab === 'products' && (
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Código SKU</label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {pick({ pt: 'Código SKU', en: 'SKU Code', es: 'Código SKU', fr: 'Code SKU' })}
+              </label>
               <input
                 type="text"
                 value={itemSku}
@@ -345,7 +375,9 @@ export function CatalogClientsTab({
             </div>
           )}
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Categoria</label>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              {pick({ pt: 'Categoria', en: 'Category', es: 'Categoría', fr: 'Catégorie' })}
+            </label>
             <input
               type="text"
               value={itemCategory}
@@ -355,7 +387,7 @@ export function CatalogClientsTab({
           </div>
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Preço de Venda (R$) *
+              {pick({ pt: 'Preço de Venda (R$) *', en: 'Selling Price (BRL) *', es: 'Precio de Venta (BRL) *', fr: 'Prix de Vente (BRL) *' })}
             </label>
             <input
               type="number"
@@ -369,7 +401,9 @@ export function CatalogClientsTab({
           </div>
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
-              {catalogTab === 'products' ? 'Custo Unitário (R$)' : 'Custo Estimado (R$)'}
+              {catalogTab === 'products'
+                ? pick({ pt: 'Custo Unitário (R$)', en: 'Unit Cost (BRL)', es: 'Costo Unitario (BRL)', fr: 'Coût Unitaire (BRL)' })
+                : pick({ pt: 'Custo Estimado (R$)', en: 'Estimated Cost (BRL)', es: 'Costo Estimado (BRL)', fr: 'Coût Estimé (BRL)' })}
             </label>
             <input
               type="number"
@@ -382,7 +416,9 @@ export function CatalogClientsTab({
           </div>
           {catalogTab === 'products' ? (
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Estoque</label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {pick({ pt: 'Estoque', en: 'Stock', es: 'Inventario', fr: 'Stock' })}
+              </label>
               <input
                 type="number"
                 min="0"
@@ -394,13 +430,13 @@ export function CatalogClientsTab({
           ) : (
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Unidade de Cobrança
+                {pick({ pt: 'Unidade de Cobrança', en: 'Billing Unit', es: 'Unidad de Cobro', fr: 'Unité de Facturation' })}
               </label>
               <input
                 type="text"
                 value={itemUnit}
                 onChange={(e) => setItemUnit(e.target.value)}
-                placeholder="Ex: Hora, Projeto, Mensal"
+                placeholder={pick({ pt: 'Ex: Hora, Projeto, Mensal', en: 'e.g. Hour, Project, Monthly', es: 'Ej: Hora, Proyecto, Mensual', fr: 'Ex : Heure, Projet, Mensuel' })}
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
               />
             </div>
@@ -412,14 +448,16 @@ export function CatalogClientsTab({
               onClick={() => setShowForm(false)}
               className="px-3 py-2 text-xs font-medium text-slate-600 cursor-pointer"
             >
-              Cancelar
+              {pick({ pt: 'Cancelar', en: 'Cancel', es: 'Cancelar', fr: 'Annuler' })}
             </button>
             <button
               type="submit"
               disabled={saving}
               className="px-4 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg cursor-pointer"
             >
-              {saving ? 'Salvando...' : 'Salvar Item'}
+              {saving
+                ? pick({ pt: 'Salvando...', en: 'Saving...', es: 'Guardando...', fr: 'Enregistrement...' })
+                : pick({ pt: 'Salvar Item', en: 'Save Item', es: 'Guardar Elemento', fr: 'Enregistrer' })}
             </button>
           </div>
         </form>
@@ -431,7 +469,12 @@ export function CatalogClientsTab({
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Filtrar itens..."
+          placeholder={pick({
+            pt: 'Filtrar itens...',
+            en: 'Filter items...',
+            es: 'Filtrar elementos...',
+            fr: 'Filtrer les éléments...',
+          })}
           className="w-full pl-9 pr-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-[#1E40AF]"
         />
       </div>
@@ -440,20 +483,25 @@ export function CatalogClientsTab({
         {catalogTab === 'products' ? (
           filteredProducts.length === 0 ? (
             <div className="p-10 text-center text-sm text-slate-500">
-              Nenhum produto cadastrado.
+              {pick({
+                pt: 'Nenhum produto cadastrado.',
+                en: 'No products registered.',
+                es: 'No hay productos registrados.',
+                fr: 'Aucun produit enregistré.',
+              })}
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold text-slate-500">
-                    <th className="py-3 px-5">Produto</th>
+                    <th className="py-3 px-5">{pick({ pt: 'Produto', en: 'Product', es: 'Producto', fr: 'Produit' })}</th>
                     <th className="py-3 px-5">SKU</th>
-                    <th className="py-3 px-5 text-right">Preço</th>
-                    <th className="py-3 px-5 text-right">Custo</th>
-                    <th className="py-3 px-5 text-right">Margem</th>
-                    <th className="py-3 px-5 text-right">Estoque</th>
-                    <th className="py-3 px-5 text-right">Ações</th>
+                    <th className="py-3 px-5 text-right">{pick({ pt: 'Preço', en: 'Price', es: 'Precio', fr: 'Prix' })}</th>
+                    <th className="py-3 px-5 text-right">{pick({ pt: 'Custo', en: 'Cost', es: 'Costo', fr: 'Coût' })}</th>
+                    <th className="py-3 px-5 text-right">{pick({ pt: 'Margem', en: 'Margin', es: 'Margen', fr: 'Marge' })}</th>
+                    <th className="py-3 px-5 text-right">{pick({ pt: 'Estoque', en: 'Stock', es: 'Stock', fr: 'Stock' })}</th>
+                    <th className="py-3 px-5 text-right">{pick({ pt: 'Ações', en: 'Actions', es: 'Acciones', fr: 'Actions' })}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
@@ -495,20 +543,25 @@ export function CatalogClientsTab({
           )
         ) : filteredServices.length === 0 ? (
           <div className="p-10 text-center text-sm text-slate-500">
-            Nenhum serviço cadastrado.
+            {pick({
+              pt: 'Nenhum serviço cadastrado.',
+              en: 'No services registered.',
+              es: 'No hay servicios registrados.',
+              fr: 'Aucun service enregistré.',
+            })}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold text-slate-500">
-                  <th className="py-3 px-5">Serviço</th>
-                  <th className="py-3 px-5">Categoria</th>
-                  <th className="py-3 px-5">Cobrança</th>
-                  <th className="py-3 px-5 text-right">Preço</th>
-                  <th className="py-3 px-5 text-right">Custo Est.</th>
-                  <th className="py-3 px-5 text-right">Margem</th>
-                  <th className="py-3 px-5 text-right">Ações</th>
+                  <th className="py-3 px-5">{pick({ pt: 'Serviço', en: 'Service', es: 'Servicio', fr: 'Service' })}</th>
+                  <th className="py-3 px-5">{pick({ pt: 'Categoria', en: 'Category', es: 'Categoría', fr: 'Catégorie' })}</th>
+                  <th className="py-3 px-5">{pick({ pt: 'Cobrança', en: 'Billing', es: 'Cobro', fr: 'Facturation' })}</th>
+                  <th className="py-3 px-5 text-right">{pick({ pt: 'Preço', en: 'Price', es: 'Precio', fr: 'Prix' })}</th>
+                  <th className="py-3 px-5 text-right">{pick({ pt: 'Custo Est.', en: 'Est. Cost', es: 'Costo Est.', fr: 'Coût Est.' })}</th>
+                  <th className="py-3 px-5 text-right">{pick({ pt: 'Margem', en: 'Margin', es: 'Margen', fr: 'Marge' })}</th>
+                  <th className="py-3 px-5 text-right">{pick({ pt: 'Ações', en: 'Actions', es: 'Acciones', fr: 'Actions' })}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-sm">

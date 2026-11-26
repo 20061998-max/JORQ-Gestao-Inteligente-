@@ -906,11 +906,20 @@ async function startServer() {
         return;
       }
 
-      const { companyName, sector, monthlyGoal, summary, question, mode } = req.body || {};
+      const { companyName, sector, monthlyGoal, summary, question, mode, language } = req.body || {};
       if (!companyName || !summary) {
         res.status(400).json({ error: 'Contexto financeiro da empresa obrigatório.' });
         return;
       }
+
+      const targetLang: 'pt' | 'en' | 'es' | 'fr' =
+        language === 'en' || language === 'es' || language === 'fr' ? language : 'pt';
+      const languagePromptMap: Record<'pt' | 'en' | 'es' | 'fr', string> = {
+        pt: 'Responda sempre em português do Brasil claro, direto e prático para empreendedores sem formação técnica em contabilidade.',
+        en: 'Always respond in clear, direct, practical English tailored for business owners without an accounting background.',
+        es: 'Responde siempre en español claro, directo y práctico para emprendedores sin formación técnica en contabilidad.',
+        fr: 'Répondez toujours en français clair, direct et pratique pour des dirigeants sans formation technique en comptabilité.',
+      };
 
       try {
         const ai = new GoogleGenAI({
@@ -923,9 +932,9 @@ async function startServer() {
         });
 
         const systemInstruction =
-          'Você é um consultor financeiro sênior especializado em PMEs brasileiras para a plataforma JORQ Gestão Inteligente. ' +
-          'Responda sempre em português do Brasil claro, direto e prático para empreendedores sem formação técnica em contabilidade. ' +
-          'Baseie suas conclusões exclusivamente nos números reais fornecidos no contexto. ' +
+          'Você é um consultor financeiro sênior especializado em PMEs para a plataforma JORQ Gestão Inteligente. ' +
+          languagePromptMap[targetLang] +
+          ' Baseie suas conclusões exclusivamente nos números reais fornecidos no contexto. ' +
           'Formate sua resposta com seções limpas e objetivas sem jargões excessivos.';
 
         const userPrompt =
@@ -944,22 +953,122 @@ async function startServer() {
               `(2) Principais ralos de despesa, (3) Desempenho do catálogo de produtos/serviços e clientes, e ` +
               `(4) Plano de ação prioritário para os próximos 30 dias.`;
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: userPrompt,
-          config: {
-            systemInstruction,
-          },
-        });
+        const candidateModels = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const;
+        const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        const extractErrorInfo = (err: unknown): { code: number; status: string; message: string } => {
+          const rawMsg = err instanceof Error ? err.message : String(err || '');
+          let code =
+            typeof (err as { status?: unknown })?.status === 'number'
+              ? Number((err as { status?: number }).status)
+              : 0;
+          let status = '';
+          let message = rawMsg;
+
+          try {
+            const parsed = JSON.parse(rawMsg);
+            const inner = parsed?.error || parsed;
+            if (typeof inner?.code === 'number') code = inner.code;
+            if (typeof inner?.status === 'string') status = inner.status;
+            if (typeof inner?.message === 'string') message = inner.message;
+          } catch {
+            const jsonMatch = rawMsg.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              try {
+                const parsed = JSON.parse(jsonMatch[0]);
+                const inner = parsed?.error || parsed;
+                if (typeof inner?.code === 'number') code = inner.code;
+                if (typeof inner?.status === 'string') status = inner.status;
+                if (typeof inner?.message === 'string') message = inner.message;
+              } catch {
+                // Keep raw message
+              }
+            }
+          }
+
+          return { code, status, message };
+        };
+
+        const isTransientError = (info: { code: number; status: string; message: string }) =>
+          info.code === 503 ||
+          info.code === 429 ||
+          info.status === 'UNAVAILABLE' ||
+          info.status === 'INDISPONÍVEL' ||
+          /high demand|alta demanda|overloaded|unavailable|temporariamente/i.test(info.message);
+
+        let responseText = '';
+        let lastErr: unknown = null;
+
+        for (const modelName of candidateModels) {
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+              const response = await ai.models.generateContent({
+                model: modelName,
+                contents: userPrompt,
+                config: {
+                  systemInstruction,
+                },
+              });
+              responseText = response.text || '';
+              if (responseText) break;
+            } catch (err) {
+              lastErr = err;
+              const info = extractErrorInfo(err);
+              if (!isTransientError(info)) {
+                throw err;
+              }
+              if (attempt === 0) {
+                await sleep(700);
+              }
+            }
+          }
+          if (responseText) break;
+        }
+
+        if (!responseText) {
+          throw lastErr || new Error('Não foi possível obter resposta da Inteligência Artificial.');
+        }
 
         res.json({
-          analysis: response.text || 'Não foi possível gerar análise no momento.',
+          analysis: responseText || 'Não foi possível gerar análise no momento.',
           generatedAt: new Date().toISOString(),
         });
       } catch (err) {
         console.error('Gemini AI error:', err);
-        const message = err instanceof Error ? err.message : 'Erro ao consultar inteligência artificial.';
-        res.status(502).json({ error: message });
+        const raw = err instanceof Error ? err.message : 'Erro ao consultar inteligência artificial.';
+        let httpStatus = 502;
+        let friendlyMessage = raw;
+
+        try {
+          const parsed = JSON.parse(raw);
+          const inner = parsed?.error || parsed;
+          const code = Number(inner?.code || 0);
+          const status = String(inner?.status || '');
+          const msg = String(inner?.message || raw);
+          if (code === 503 || status === 'UNAVAILABLE' || status === 'INDISPONÍVEL' || /alta demanda|high demand/i.test(msg)) {
+            httpStatus = 503;
+            friendlyMessage =
+              'O serviço de Inteligência Artificial está com pico temporário de demanda no momento. Aguarde alguns segundos e clique em "Tentar novamente".';
+          } else if (code === 429 || status === 'RESOURCE_EXHAUSTED') {
+            httpStatus = 429;
+            friendlyMessage =
+              'Limite temporário de requisições da API Gemini atingido. Aguarde um instante e tente novamente.';
+          } else if (code === 400 || code === 401 || code === 403 || /API_KEY_INVALID|PERMISSION_DENIED/i.test(msg)) {
+            httpStatus = 403;
+            friendlyMessage =
+              'A chave GEMINI_API_KEY configurada no servidor foi recusada ou está inválida. Verifique a variável de ambiente no painel do Render.';
+          } else {
+            friendlyMessage = msg;
+          }
+        } catch {
+          if (/503|alta demanda|high demand|UNAVAILABLE|INDISPON/i.test(raw)) {
+            httpStatus = 503;
+            friendlyMessage =
+              'O serviço de Inteligência Artificial está com pico temporário de demanda no momento. Aguarde alguns segundos e clique em "Tentar novamente".';
+          }
+        }
+
+        res.status(httpStatus).json({ error: friendlyMessage });
       }
     }
   );

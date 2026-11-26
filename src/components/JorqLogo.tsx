@@ -5,6 +5,63 @@ interface JorqLogoProps {
   showSignature?: boolean;
 }
 
+export function JorqSignatureSvg({ dark = false }: { dark?: boolean }) {
+  const sigColor = dark ? '#93C5FD' : '#1E40AF';
+
+  return (
+    <svg
+      width="108"
+      height="26"
+      viewBox="0 0 140 34"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className="shrink-0"
+      aria-label="Rubrica Josuel Roque"
+    >
+      <text
+        x="2"
+        y="20"
+        fill={dark ? '#FFFFFF' : '#0F172A'}
+        style={{
+          fontFamily: "'Great Vibes', 'Brush Script MT', 'Segoe Script', cursive",
+          fontSize: '21px',
+          fontWeight: 400,
+          letterSpacing: '0.01em',
+        }}
+      >
+        Josuel Roque
+      </text>
+      <path
+        d="M4 26.5C34 23.5 76 23 118 25.5C126 26 132 23.5 136 21"
+        stroke={sigColor}
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M92 28.5C105 27.5 117 27 125 27.8"
+        stroke={sigColor}
+        strokeWidth="1"
+        strokeLinecap="round"
+        opacity="0.7"
+      />
+    </svg>
+  );
+}
+
+export function OwnerSignatureStamp() {
+  return (
+    <div
+      className="fixed bottom-3 right-3 sm:bottom-4 sm:right-5 z-30 pointer-events-none select-none"
+      aria-label="Rubrica Josuel Roque"
+      title="Assinatura: Josuel Roque"
+    >
+      <div className="inline-flex items-center px-3 py-1 rounded-lg bg-slate-950/75 backdrop-blur-md border border-white/15 shadow-lg">
+        <JorqSignatureSvg dark />
+      </div>
+    </div>
+  );
+}
+
 export function JorqLogo({
   compact = false,
   dark = false,
@@ -14,7 +71,6 @@ export function JorqLogo({
   const primaryFill = dark ? '#FFFFFF' : '#0F172A';
   const accentFill = dark ? '#60A5FA' : '#3B82F6';
   const titleClass = dark ? 'text-white' : 'text-[#0F172A]';
-  const sigColor = dark ? '#93C5FD' : '#1E40AF';
 
   return (
     <span className="inline-flex items-center gap-2.5 select-none whitespace-nowrap shrink-0">
@@ -58,42 +114,7 @@ export function JorqLogo({
               aria-label="Rubrica Josuel Roque"
               title="Assinatura: Josuel Roque"
             >
-              <svg
-                width="108"
-                height="26"
-                viewBox="0 0 140 34"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-                className="shrink-0"
-              >
-                {/* Estilização de assinatura cursiva + rubrica manuscrita */}
-                <text
-                  x="2"
-                  y="20"
-                  fill={dark ? '#E2E8F0' : '#0F172A'}
-                  style={{
-                    fontFamily: "'Great Vibes', 'Brush Script MT', 'Segoe Script', cursive",
-                    fontSize: '21px',
-                    fontWeight: 400,
-                    letterSpacing: '0.01em',
-                  }}
-                >
-                  Josuel Roque
-                </text>
-                <path
-                  d="M4 26.5C34 23.5 76 23 118 25.5C126 26 132 23.5 136 21"
-                  stroke={sigColor}
-                  strokeWidth="1.4"
-                  strokeLinecap="round"
-                />
-                <path
-                  d="M92 28.5C105 27.5 117 27 125 27.8"
-                  stroke={sigColor}
-                  strokeWidth="1"
-                  strokeLinecap="round"
-                  opacity="0.7"
-                />
-              </svg>
+              <JorqSignatureSvg dark={dark} />
             </span>
           )}
         </span>

@@ -20,6 +20,7 @@ import {
   getSemanticStatus,
 } from '../../components/SemanticChartLegend';
 import { useAuth } from '../../contexts/AuthContext';
+import { useLanguage } from '../../contexts/LanguageContext';
 import {
   saveReportSnapshot,
   type Company,
@@ -60,6 +61,9 @@ export function ReportsAiTab({
   savedReports,
 }: ReportsAiTabProps) {
   const { getIdToken } = useAuth();
+  const { lang, intlLocale, t, pick } = useLanguage();
+  const aiText = t.aiTab;
+  const repText = t.reportsTab;
   const [periodStart, setPeriodStart] = useState('');
   const [periodEnd, setPeriodEnd] = useState('');
   const [savingSnap, setSavingSnap] = useState(false);
@@ -101,37 +105,48 @@ export function ReportsAiTab({
       : 0;
 
     return [
-      { periodo: 'Mês Atual', receita: Math.round(avgRev), despesa: Math.round(avgExp), saldo: Math.round(avgRev - avgExp) },
-      { periodo: 'Projeção +30d', receita: Math.round(avgRev * 1.05), despesa: Math.round(avgExp * 1.02), saldo: Math.round(avgRev * 1.05 - avgExp * 1.02) },
-      { periodo: 'Projeção +60d', receita: Math.round(avgRev * 1.1), despesa: Math.round(avgExp * 1.03), saldo: Math.round(avgRev * 1.1 - avgExp * 1.03) },
-      { periodo: 'Projeção +90d', receita: Math.round(avgRev * 1.16), despesa: Math.round(avgExp * 1.04), saldo: Math.round(avgRev * 1.16 - avgExp * 1.04) },
+      { periodo: pick({ pt: 'Mês Atual', en: 'Current Month', es: 'Mes Actual', fr: 'Mois Actuel' }), receita: Math.round(avgRev), despesa: Math.round(avgExp), saldo: Math.round(avgRev - avgExp) },
+      { periodo: pick({ pt: 'Projeção +30d', en: 'Forecast +30d', es: 'Proyección +30d', fr: 'Prévision +30j' }), receita: Math.round(avgRev * 1.05), despesa: Math.round(avgExp * 1.02), saldo: Math.round(avgRev * 1.05 - avgExp * 1.02) },
+      { periodo: pick({ pt: 'Projeção +60d', en: 'Forecast +60d', es: 'Proyección +60d', fr: 'Prévision +60j' }), receita: Math.round(avgRev * 1.1), despesa: Math.round(avgExp * 1.03), saldo: Math.round(avgRev * 1.1 - avgExp * 1.03) },
+      { periodo: pick({ pt: 'Projeção +90d', en: 'Forecast +90d', es: 'Proyección +90d', fr: 'Prévision +90j' }), receita: Math.round(avgRev * 1.16), despesa: Math.round(avgExp * 1.04), saldo: Math.round(avgRev * 1.16 - avgExp * 1.04) },
     ];
-  }, [revenues, expenses]);
+  }, [revenues, expenses, pick]);
 
   const dreChartData = useMemo(() => {
-    const resultSemantic = getSemanticStatus(metrics.netProfit, metrics.marginPercent);
+    const resultSemantic = getSemanticStatus(metrics.netProfit, metrics.marginPercent, lang);
     return [
-      { label: 'Receitas', valor: metrics.totalRevenue, color: SEMANTIC_COLORS.positive, tag: 'Positivo' },
-      { label: 'Despesas', valor: -metrics.totalExpense, color: SEMANTIC_COLORS.negative, tag: 'Saída' },
+      { label: repText.colRevenues, valor: metrics.totalRevenue, color: SEMANTIC_COLORS.positive, tag: t.common.positive },
+      { label: repText.colExpenses, valor: -metrics.totalExpense, color: SEMANTIC_COLORS.negative, tag: t.common.negative },
       {
-        label: 'Resultado Líquido',
+        label: repText.netResult,
         valor: metrics.netProfit,
         color: resultSemantic.color,
         tag: resultSemantic.label,
       },
     ];
-  }, [metrics]);
+  }, [metrics, lang, repText.colRevenues, repText.colExpenses, repText.netResult, t.common.positive, t.common.negative]);
 
   const handleExportCSV = () => {
     exportToCSV(
       `jorq-financeiro-${company.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-      ['Data', 'Tipo', 'Descrição', 'Categoria', 'Status', 'Valor'],
+      [
+        pick({ pt: 'Data', en: 'Date', es: 'Fecha', fr: 'Date' }),
+        pick({ pt: 'Tipo', en: 'Type', es: 'Tipo', fr: 'Type' }),
+        pick({ pt: 'Descrição', en: 'Description', es: 'Descripción', fr: 'Description' }),
+        pick({ pt: 'Categoria', en: 'Category', es: 'Categoría', fr: 'Catégorie' }),
+        'Status',
+        pick({ pt: 'Valor', en: 'Amount', es: 'Valor', fr: 'Montant' }),
+      ],
       filteredTx.map((t) => [
-        formatDateBR(t.date),
-        t.type === 'income' ? 'Receita' : 'Despesa',
+        formatDateBR(t.date, lang),
+        t.type === 'income'
+          ? pick({ pt: 'Receita', en: 'Revenue', es: 'Ingreso', fr: 'Revenu' })
+          : pick({ pt: 'Despesa', en: 'Expense', es: 'Gasto', fr: 'Dépense' }),
         t.description,
         t.category,
-        t.status === 'settled' ? 'Liquidado' : 'Pendente',
+        t.status === 'settled'
+          ? pick({ pt: 'Liquidado', en: 'Settled', es: 'Liquidado', fr: 'Réglé' })
+          : pick({ pt: 'Pendente', en: 'Pending', es: 'Pendiente', fr: 'En attente' }),
         t.type === 'income' ? Number(t.amount) : -Number(t.amount),
       ])
     );
@@ -140,10 +155,10 @@ export function ReportsAiTab({
   const handleExportPDF = () => {
     const periodLabel =
       periodStart || periodEnd
-        ? `${periodStart ? formatDateBR(periodStart) : 'Início'} até ${
-            periodEnd ? formatDateBR(periodEnd) : 'Hoje'
+        ? `${periodStart ? formatDateBR(periodStart, lang) : pick({ pt: 'Início', en: 'Start', es: 'Inicio', fr: 'Début' })} ${pick({ pt: 'até', en: 'to', es: 'hasta', fr: 'au' })} ${
+            periodEnd ? formatDateBR(periodEnd, lang) : pick({ pt: 'Hoje', en: 'Today', es: 'Hoy', fr: "Aujourd'hui" })
           }`
-        : 'Todo o período';
+        : pick({ pt: 'Todo o período', en: 'All time', es: 'Todo el período', fr: 'Toute la période' });
     exportFinancialReportPDF({
       companyName: company.name,
       periodLabel,
@@ -159,7 +174,7 @@ export function ReportsAiTab({
     setSavingSnap(true);
     try {
       await saveReportSnapshot(company.id, userId, {
-        title: `DRE ${new Date().toLocaleDateString('pt-BR')}`,
+        title: `DRE ${new Date().toLocaleDateString(intlLocale)}`,
         type: 'dre',
         periodStart: periodStart || undefined,
         periodEnd: periodEnd || undefined,
@@ -194,6 +209,7 @@ export function ReportsAiTab({
           monthlyGoal: company.monthlyGoal || 0,
           mode: selectedMode,
           question: aiQuestion,
+          language: lang,
           summary: {
             totalRevenues: totalRev,
             totalExpenses: totalExp,
@@ -220,12 +236,12 @@ export function ReportsAiTab({
       });
       const data = await res.json();
       if (!res.ok) {
-        setAiError(data.error || 'Erro ao gerar análise financeira.');
+        setAiError(data.error || aiText.errFallback);
       } else {
         setAiResponse(data.analysis || '');
       }
     } catch (err) {
-      setAiError(err instanceof Error ? err.message : 'Falha de comunicação com o servidor.');
+      setAiError(err instanceof Error ? err.message : aiText.errNetwork);
     } finally {
       setAiLoading(false);
     }
@@ -238,12 +254,9 @@ export function ReportsAiTab({
           <div className="flex items-start gap-3">
             <Brain className="w-6 h-6 text-[#1E40AF] shrink-0 mt-0.5" />
             <div>
-              <h2 className="font-display text-lg font-bold text-[#0F172A]">
-                Consultor Financeiro com Inteligência Artificial
-              </h2>
+              <h2 className="font-display text-lg font-bold text-[#0F172A]">{aiText.title}</h2>
               <p className="mt-1 text-sm text-slate-600 leading-relaxed">
-                As análises são processadas no servidor utilizando os lançamentos reais de receitas,
-                despesas, catálogo e metas da empresa <strong>{company.name}</strong>.
+                {aiText.subtitlePrefix} <strong>{company.name}</strong>.
               </p>
             </div>
           </div>
@@ -255,7 +268,7 @@ export function ReportsAiTab({
               onClick={() => runAiAnalysis('diagnosis')}
               className="px-4 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] disabled:opacity-50 cursor-pointer"
             >
-              Gerar Diagnóstico Financeiro
+              {aiText.btnDiagnosis}
             </button>
             <button
               type="button"
@@ -263,7 +276,7 @@ export function ReportsAiTab({
               onClick={() => runAiAnalysis('forecast')}
               className="px-4 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
             >
-              Previsão de Caixa (90 dias)
+              {aiText.btnForecast}
             </button>
           </div>
 
@@ -272,7 +285,7 @@ export function ReportsAiTab({
               type="text"
               value={aiQuestion}
               onChange={(e) => setAiQuestion(e.target.value)}
-              placeholder="Pergunte sobre seus custos, margem, ponto de equilíbrio ou metas..."
+              placeholder={aiText.qaPlaceholder}
               className="flex-1 px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-[#1E40AF]"
             />
             <button
@@ -281,20 +294,28 @@ export function ReportsAiTab({
               className="inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-white bg-[#0F172A] rounded-lg hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
             >
               <Send className="w-4 h-4" />
-              <span>Perguntar</span>
+              <span>{aiText.btnAsk}</span>
             </button>
           </form>
         </div>
 
         {aiError && (
-          <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
-            {aiError}
+          <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <span>{aiError}</span>
+            <button
+              type="button"
+              disabled={aiLoading}
+              onClick={() => runAiAnalysis(aiMode)}
+              className="px-3.5 py-1.5 text-xs font-semibold text-red-800 bg-white border border-red-300 rounded-lg hover:bg-red-100 shrink-0 cursor-pointer"
+            >
+              {t.common.retry}
+            </button>
           </div>
         )}
 
         {aiLoading && (
           <div className="bg-white border border-slate-200 rounded-xl p-8 text-sm text-slate-600">
-            Analisando indicadores financeiros de {company.name}...
+            {aiText.loadingPrefix} {company.name}...
           </div>
         )}
 
@@ -302,10 +323,10 @@ export function ReportsAiTab({
           <div className="bg-white border border-slate-200 rounded-xl p-6">
             <p className="text-xs font-semibold text-[#1E40AF] mb-3">
               {aiMode === 'forecast'
-                ? 'Previsão Financeira 90 Dias'
+                ? aiText.modeForecastTitle
                 : aiMode === 'qa'
-                ? 'Resposta do Consultor Financeiro'
-                : 'Diagnóstico Financeiro Completo'}
+                ? aiText.modeQaTitle
+                : aiText.modeDiagnosisTitle}
             </p>
             <div className="text-sm text-slate-700 whitespace-pre-line leading-relaxed">
               {aiResponse}
@@ -322,7 +343,9 @@ export function ReportsAiTab({
       <div className="bg-white border border-slate-200 rounded-xl p-6 flex flex-col lg:flex-row lg:items-end justify-between gap-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Data inicial</label>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              {repText.startDate}
+            </label>
             <input
               type="date"
               value={periodStart}
@@ -331,7 +354,9 @@ export function ReportsAiTab({
             />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Data final</label>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              {repText.endDate}
+            </label>
             <input
               type="date"
               value={periodEnd}
@@ -349,7 +374,7 @@ export function ReportsAiTab({
             className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
           >
             <BookmarkPlus className="w-4 h-4" />
-            <span>{savingSnap ? 'Salvando...' : 'Salvar Relatório'}</span>
+            <span>{savingSnap ? repText.saving : repText.saveReport}</span>
           </button>
           <button
             type="button"
@@ -357,7 +382,7 @@ export function ReportsAiTab({
             className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
           >
             <Download className="w-4 h-4" />
-            <span>Exportar CSV</span>
+            <span>{repText.exportCsv}</span>
           </button>
           <button
             type="button"
@@ -365,7 +390,7 @@ export function ReportsAiTab({
             className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] cursor-pointer"
           >
             <FileText className="w-4 h-4" />
-            <span>Exportar PDF</span>
+            <span>{repText.exportPdf}</span>
           </button>
         </div>
       </div>
@@ -373,19 +398,19 @@ export function ReportsAiTab({
       {/* DRE Simplificado */}
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
         <div className="bg-white border border-slate-200 rounded-xl p-5">
-          <p className="text-xs text-slate-500">Receitas do Período</p>
+          <p className="text-xs text-slate-500">{repText.revenuesPeriod}</p>
           <p className="mt-1 font-mono tabular-nums text-xl font-bold text-[#16A34A]">
             {formatBRL(metrics.totalRevenue)}
           </p>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-5">
-          <p className="text-xs text-slate-500">Despesas do Período</p>
+          <p className="text-xs text-slate-500">{repText.expensesPeriod}</p>
           <p className="mt-1 font-mono tabular-nums text-xl font-bold text-[#DC2626]">
             {formatBRL(metrics.totalExpense)}
           </p>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-5">
-          <p className="text-xs text-slate-500">Resultado Líquido</p>
+          <p className="text-xs text-slate-500">{repText.netResult}</p>
           <p
             className={`mt-1 font-mono tabular-nums text-xl font-bold ${
               metrics.netProfit >= 0 ? 'text-[#0F172A]' : 'text-[#DC2626]'
@@ -395,7 +420,7 @@ export function ReportsAiTab({
           </p>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-5">
-          <p className="text-xs text-slate-500">Margem Líquida</p>
+          <p className="text-xs text-slate-500">{repText.netMargin}</p>
           <p className="mt-1 font-mono tabular-nums text-xl font-bold text-[#1E40AF]">
             {metrics.marginPercent.toFixed(1)}%
           </p>
@@ -406,17 +431,15 @@ export function ReportsAiTab({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6">
           <h3 className="font-display text-base font-bold text-[#0F172A]">
-            Balanço DRE do Período (Semafórico)
+            {repText.dreChartTitle}
           </h3>
-          <p className="text-xs text-slate-500 mt-1 mb-3">
-            Comparativo entre entradas, saídas e resultado final.
-          </p>
+          <p className="text-xs text-slate-500 mt-1 mb-3">{repText.dreChartSub}</p>
           <div className="mb-4">
             <SemanticChartLegend
               items={[
-                { label: 'Positivo', color: SEMANTIC_COLORS.positive },
-                { label: 'Normal', color: SEMANTIC_COLORS.normal },
-                { label: 'Negativo', color: SEMANTIC_COLORS.negative },
+                { label: t.common.positive, color: SEMANTIC_COLORS.positive },
+                { label: t.common.normal, color: SEMANTIC_COLORS.normal },
+                { label: t.common.negative, color: SEMANTIC_COLORS.negative },
               ]}
             />
           </div>
@@ -430,11 +453,11 @@ export function ReportsAiTab({
                 <Tooltip
                   formatter={(val, _name, item) => [
                     `${formatBRL(Number(val))} (${item?.payload?.tag || ''})`,
-                    'Valor',
+                    pick({ pt: 'Valor', en: 'Amount', es: 'Valor', fr: 'Montant' }),
                   ]}
                   contentStyle={{ borderRadius: '10px', border: '1px solid #E2E8F0', fontSize: '12px' }}
                 />
-                <Bar dataKey="valor" name="Valor" radius={[4, 4, 4, 4]}>
+                <Bar dataKey="valor" name={pick({ pt: 'Valor', en: 'Amount', es: 'Valor', fr: 'Montant' })} radius={[4, 4, 4, 4]}>
                   {dreChartData.map((entry) => (
                     <Cell key={entry.label} fill={entry.color} />
                   ))}
@@ -446,17 +469,15 @@ export function ReportsAiTab({
 
         <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6">
           <h3 className="font-display text-base font-bold text-[#0F172A]">
-            Projeção Financeira Estimada (Próximos 90 dias)
+            {repText.forecastChartTitle}
           </h3>
-          <p className="text-xs text-slate-500 mt-1 mb-3">
-            Verde projeta receitas, vermelho projeta despesas e amarelo mostra a linha de saldo líquido.
-          </p>
+          <p className="text-xs text-slate-500 mt-1 mb-3">{repText.forecastChartSub}</p>
           <div className="mb-4">
             <SemanticChartLegend
               items={[
-                { label: 'Receita Projetada', color: SEMANTIC_COLORS.positive },
-                { label: 'Despesa Projetada', color: SEMANTIC_COLORS.negative },
-                { label: 'Saldo Projetado', color: SEMANTIC_COLORS.normal },
+                { label: repText.projRevenue, color: SEMANTIC_COLORS.positive },
+                { label: repText.projExpense, color: SEMANTIC_COLORS.negative },
+                { label: repText.projBalance, color: SEMANTIC_COLORS.normal },
               ]}
             />
           </div>
@@ -474,7 +495,7 @@ export function ReportsAiTab({
                 <Area
                   type="monotone"
                   dataKey="receita"
-                  name="Receita Projetada"
+                  name={repText.projRevenue}
                   stroke={SEMANTIC_COLORS.positive}
                   strokeWidth={2}
                   fill="#DCFCE7"
@@ -482,7 +503,7 @@ export function ReportsAiTab({
                 <Area
                   type="monotone"
                   dataKey="despesa"
-                  name="Despesa Projetada"
+                  name={repText.projExpense}
                   stroke={SEMANTIC_COLORS.negative}
                   strokeWidth={2}
                   fill="#FEE2E2"
@@ -490,7 +511,7 @@ export function ReportsAiTab({
                 <Line
                   type="monotone"
                   dataKey="saldo"
-                  name="Saldo Projetado"
+                  name={repText.projBalance}
                   stroke={SEMANTIC_COLORS.normal}
                   strokeWidth={2.5}
                   dot={{ r: 4, fill: SEMANTIC_COLORS.normal, stroke: '#FFFFFF', strokeWidth: 2 }}
@@ -505,23 +526,22 @@ export function ReportsAiTab({
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-200">
           <h3 className="font-display text-base font-bold text-[#0F172A]">
-            Histórico de Relatórios Salvos
+            {repText.savedHistoryTitle}
           </h3>
         </div>
         {savedReports.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-500">
-            Nenhum relatório salvo ainda. Clique em <strong>Salvar Relatório</strong> acima para
-            arquivar um fechamento.
+            {repText.savedEmpty}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold text-slate-500">
-                  <th className="py-3 px-5">Título</th>
-                  <th className="py-3 px-5 text-right">Receitas</th>
-                  <th className="py-3 px-5 text-right">Despesas</th>
-                  <th className="py-3 px-5 text-right">Lucro Líquido</th>
+                  <th className="py-3 px-5">{repText.colTitle}</th>
+                  <th className="py-3 px-5 text-right">{repText.colRevenues}</th>
+                  <th className="py-3 px-5 text-right">{repText.colExpenses}</th>
+                  <th className="py-3 px-5 text-right">{repText.colNetProfit}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-sm">

@@ -17,7 +17,10 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useLanguage } from '../contexts/LanguageContext';
 import { JorqLogo } from '../components/JorqLogo';
+import { LanguageSelector } from '../components/LanguageSelector';
+import { PWAInstallButton } from '../components/PWAInstallButton';
 import {
   subscribeCompanyCollection,
   subscribePublicPlans,
@@ -70,6 +73,7 @@ export function ClientDashboard({
   initialTab = 'overview',
 }: ClientDashboardProps) {
   const { firebaseUser, company, userProfile, isAdmin, logout, getIdToken } = useAuth();
+  const { t } = useLanguage();
   const [activeTab, setActiveTab] = useState<ClientTabId>(initialTab);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -170,22 +174,22 @@ export function ClientDashboard({
   const unreadCount = notifications.filter((n) => !n.read).length;
 
   const navItems: { id: ClientTabId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-    { id: 'overview', label: 'Visão Geral', icon: LayoutDashboard },
-    { id: 'finance', label: 'Gestão Financeira', icon: Wallet },
-    { id: 'catalog', label: 'Produtos e Serviços', icon: Package },
-    { id: 'clients', label: 'Clientes', icon: Users },
-    { id: 'reports', label: 'Relatórios e Gráficos', icon: BarChart3 },
-    { id: 'ai', label: 'Inteligência Artificial', icon: Brain },
-    { id: 'subscription', label: 'Assinatura e Planos', icon: CreditCard },
-    { id: 'notifications', label: 'Notificações', icon: Bell },
-    { id: 'settings', label: 'Configurações', icon: Settings },
-    { id: 'manual', label: 'Ajuda e Manual', icon: BookOpen },
+    { id: 'overview', label: t.clientNav.overview, icon: LayoutDashboard },
+    { id: 'finance', label: t.clientNav.finance, icon: Wallet },
+    { id: 'catalog', label: t.clientNav.catalog, icon: Package },
+    { id: 'clients', label: t.clientNav.clients, icon: Users },
+    { id: 'reports', label: t.clientNav.reports, icon: BarChart3 },
+    { id: 'ai', label: t.clientNav.ai, icon: Brain },
+    { id: 'subscription', label: t.clientNav.subscription, icon: CreditCard },
+    { id: 'notifications', label: t.clientNav.notifications, icon: Bell },
+    { id: 'settings', label: t.clientNav.settings, icon: Settings },
+    { id: 'manual', label: t.clientNav.manual, icon: BookOpen },
   ];
 
   const currentNav = navItems.find((n) => n.id === activeTab);
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] flex">
+    <div className="min-h-screen bg-[#F8FAFC]/82 backdrop-blur-[2px] flex">
       {/* Sidebar */}
       <aside
         className={`fixed inset-y-0 left-0 z-40 w-64 bg-white border-r border-slate-200 flex flex-col transition-transform lg:translate-x-0 lg:static ${
@@ -265,7 +269,7 @@ export function ClientDashboard({
               className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs font-semibold text-white bg-[#0F172A] rounded-lg hover:bg-slate-800 cursor-pointer"
             >
               <Shield className="w-4 h-4 shrink-0" />
-              <span>Painel Administrativo</span>
+              <span>{t.clientNav.adminPanel}</span>
             </button>
           )}
           <button
@@ -274,57 +278,59 @@ export function ClientDashboard({
             className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg cursor-pointer"
           >
             <LogOut className="w-4 h-4 shrink-0" />
-            <span>Sair da Conta</span>
+            <span>{t.common.logout}</span>
           </button>
         </div>
       </aside>
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between gap-4 sticky top-0 z-30">
-          <div className="flex items-center gap-3 min-w-0">
+        <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-6 flex items-center justify-between gap-3 sticky top-0 z-30">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <button
               type="button"
               onClick={() => setSidebarOpen(true)}
-              className="lg:hidden p-2 text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+              className="lg:hidden p-2 -ml-1 text-slate-600 hover:bg-slate-100 rounded-lg shrink-0 cursor-pointer"
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div className="flex items-center gap-2 text-sm truncate">
-              <span className="text-slate-400 truncate hidden sm:inline">{company.name}</span>
-              <span className="text-slate-300 hidden sm:inline">/</span>
+            <div className="flex items-center gap-2 text-sm min-w-0">
+              <span className="text-slate-400 truncate hidden md:inline max-w-[160px]">{company.name}</span>
+              <span className="text-slate-300 hidden md:inline">/</span>
               <h1 className="font-display font-bold text-slate-900 truncate">
-                {currentNav?.label || 'Painel'}
+                {currentNav?.label || t.clientNav.defaultPanelTitle}
               </h1>
             </div>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <LanguageSelector compact />
+            <PWAInstallButton compact />
             {isAdmin && (
-              <span className="hidden sm:inline text-xs font-semibold text-[#16A34A]">
-                Modo Proprietário (Gratuito)
+              <span className="hidden xl:inline text-xs font-semibold text-[#16A34A] whitespace-nowrap">
+                {t.clientNav.ownerFreeMode}
               </span>
             )}
-            <span className="hidden md:inline text-xs text-slate-500">
+            <span className="hidden xl:inline text-xs text-slate-500 truncate max-w-[140px]">
               {userProfile?.name || firebaseUser.email}
             </span>
             {isAdmin && onOpenAdmin && (
               <button
                 type="button"
                 onClick={onOpenAdmin}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Shield className="w-3.5 h-3.5" />
-                <span>Admin</span>
+                <span>{t.clientNav.adminShort}</span>
               </button>
             )}
             <button
               type="button"
               onClick={() => setActiveTab('reports')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] whitespace-nowrap shrink-0 cursor-pointer"
             >
               <FileText className="w-3.5 h-3.5" />
-              <span>Relatórios</span>
+              <span className="hidden sm:inline">{t.clientNav.reportsShort}</span>
             </button>
           </div>
         </header>
