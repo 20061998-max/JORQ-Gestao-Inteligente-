@@ -1,0 +1,403 @@
+{
+  "entities": {
+    "Admin": {
+      "title": "Admin",
+      "description": "Platform administrator registry entry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "grantedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "grantedAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Authenticated platform user profile with private PII.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "role": { "type": "string", "enum": ["client", "admin"] },
+        "companyId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "email", "role", "status", "createdAt", "updatedAt"]
+    },
+    "Company": {
+      "title": "Company",
+      "description": "Tenant company profile isolated per customer.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "tradeName": { "type": "string", "maxLength": 140 },
+        "document": { "type": "string", "maxLength": 32 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "address": { "type": "string", "maxLength": 240 },
+        "sector": { "type": "string", "maxLength": 80 },
+        "logoUrl": { "type": "string", "maxLength": 1000 },
+        "monthlyGoal": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "suspended", "trial"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "name", "status", "createdAt", "updatedAt"]
+    },
+    "CompanyMember": {
+      "title": "CompanyMember",
+      "description": "Company membership linking user to company tenant.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["owner", "manager", "viewer"] },
+        "status": { "type": "string", "enum": ["active", "invited", "suspended"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "userId", "email", "name", "role", "status", "createdAt", "updatedAt"]
+    },
+    "Plan": {
+      "title": "Plan",
+      "description": "Configurable SaaS subscription plan.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "targetAudience": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 400 },
+        "monthlyPrice": { "type": "number" },
+        "discountMonthly": { "type": "number" },
+        "discountQuarterly": { "type": "number" },
+        "discountSemiannual": { "type": "number" },
+        "discountAnnual": { "type": "number" },
+        "maxUsers": { "type": "integer" },
+        "maxTransactions": { "type": "integer" },
+        "maxProducts": { "type": "integer" },
+        "aiQueriesLimit": { "type": "integer" },
+        "features": { "type": "array" },
+        "active": { "type": "boolean" },
+        "sortOrder": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "targetAudience", "monthlyPrice", "discountMonthly", "discountQuarterly", "discountSemiannual", "discountAnnual", "maxUsers", "maxTransactions", "aiQueriesLimit", "active", "createdAt", "updatedAt"]
+    },
+    "Coupon": {
+      "title": "Coupon",
+      "description": "Promotional discount coupon configured by admin.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "discountPercent": { "type": "number" },
+        "maxUses": { "type": "integer" },
+        "usedCount": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "expiresAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "discountPercent", "maxUses", "usedCount", "active", "createdAt", "updatedAt"]
+    },
+    "Subscription": {
+      "title": "Subscription",
+      "description": "Company recurring subscription record synchronized with Mercado Pago.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "planId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "planName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "billingCycle": { "type": "string", "enum": ["monthly", "quarterly", "semiannual", "annual"] },
+        "discountPercent": { "type": "number" },
+        "baseMonthlyPrice": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "couponCode": { "type": "string", "maxLength": 40 },
+        "status": { "type": "string", "enum": ["pending", "authorized", "paused", "cancelled", "overdue", "suspended"] },
+        "mpPreapprovalId": { "type": "string", "maxLength": 160 },
+        "mpInitPoint": { "type": "string", "maxLength": 500 },
+        "mpStatus": { "type": "string", "maxLength": 40 },
+        "nextBillingDate": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "userId", "planId", "planName", "billingCycle", "discountPercent", "baseMonthlyPrice", "totalAmount", "status", "createdAt", "updatedAt"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Subscription charge and Mercado Pago payment record.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subscriptionId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "enum": ["BRL"] },
+        "status": { "type": "string", "enum": ["approved", "pending", "rejected", "cancelled", "refunded"] },
+        "mpPaymentId": { "type": "string", "maxLength": 160 },
+        "paymentMethod": { "type": "string", "maxLength": 60 },
+        "paidAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "userId", "subscriptionId", "amount", "currency", "status", "createdAt"]
+    },
+    "Revenue": {
+      "title": "Revenue",
+      "description": "Company revenue entry.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "description": { "type": "string", "minLength": 2, "maxLength": 180 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "amount": { "type": "number" },
+        "date": { "type": "string", "minLength": 8, "maxLength": 32 },
+        "customerName": { "type": "string", "maxLength": 140 },
+        "status": { "type": "string", "enum": ["received", "pending"] },
+        "paymentMethod": { "type": "string", "maxLength": 60 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "userId", "description", "category", "amount", "date", "status", "createdAt", "updatedAt"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Company expense entry.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "description": { "type": "string", "minLength": 2, "maxLength": 180 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "amount": { "type": "number" },
+        "date": { "type": "string", "minLength": 8, "maxLength": 32 },
+        "supplierName": { "type": "string", "maxLength": 140 },
+        "status": { "type": "string", "enum": ["paid", "pending"] },
+        "paymentMethod": { "type": "string", "maxLength": 60 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "userId", "description", "category", "amount", "date", "status", "createdAt", "updatedAt"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Unified cash flow ledger entry.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "enum": ["income", "expense"] },
+        "sourceId": { "type": "string", "maxLength": 128 },
+        "description": { "type": "string", "minLength": 2, "maxLength": 180 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "amount": { "type": "number" },
+        "date": { "type": "string", "minLength": 8, "maxLength": 32 },
+        "status": { "type": "string", "enum": ["settled", "pending"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "userId", "type", "description", "category", "amount", "date", "status", "createdAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Company product catalog item.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "sku": { "type": "string", "maxLength": 40 },
+        "category": { "type": "string", "maxLength": 80 },
+        "price": { "type": "number" },
+        "cost": { "type": "number" },
+        "stock": { "type": "integer" },
+        "unit": { "type": "string", "maxLength": 24 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "userId", "name", "price", "cost", "stock", "active", "createdAt", "updatedAt"]
+    },
+    "Service": {
+      "title": "Service",
+      "description": "Company service catalog item.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "category": { "type": "string", "maxLength": 80 },
+        "price": { "type": "number" },
+        "estimatedCost": { "type": "number" },
+        "billingUnit": { "type": "string", "maxLength": 40 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "userId", "name", "price", "estimatedCost", "active", "createdAt", "updatedAt"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Customer managed by a tenant company.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "document": { "type": "string", "maxLength": 32 },
+        "email": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "city": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "userId", "name", "status", "createdAt", "updatedAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Saved financial or operational report snapshot.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "type": { "type": "string", "enum": ["dre", "cashflow", "customers", "ai_forecast"] },
+        "periodStart": { "type": "string", "maxLength": 32 },
+        "periodEnd": { "type": "string", "maxLength": 32 },
+        "totalRevenue": { "type": "number" },
+        "totalExpense": { "type": "number" },
+        "netProfit": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "userId", "title", "type", "totalRevenue", "totalExpense", "netProfit", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notification for user/company.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "message": { "type": "string", "minLength": 2, "maxLength": 500 },
+        "category": { "type": "string", "enum": ["billing", "finance", "system", "ai"] },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "message", "category", "read", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable audit log entry for sensitive actions.",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorEmail": { "type": "string", "maxLength": 200 },
+        "companyId": { "type": "string", "maxLength": 128 },
+        "action": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "targetCollection": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "details": { "type": "string", "maxLength": 600 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorUid", "action", "targetCollection", "createdAt"]
+    },
+    "SystemSetting": {
+      "title": "SystemSetting",
+      "description": "Global platform configuration controlled by owner admin.",
+      "type": "object",
+      "properties": {
+        "platformName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "supportEmail": { "type": "string", "format": "email", "maxLength": 200 },
+        "mpEnvironment": { "type": "string", "enum": ["sandbox", "production"] },
+        "defaultCurrency": { "type": "string", "enum": ["BRL"] },
+        "maintenanceMode": { "type": "boolean" },
+        "updatedBy": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["platformName", "supportEmail", "mpEnvironment", "defaultCurrency", "maintenanceMode", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/Admin" },
+      "description": "Trusted platform admin documents."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Private user profiles with PII."
+    },
+    "/companies/{companyId}": {
+      "schema": { "$ref": "#/entities/Company" },
+      "description": "Tenant company profiles."
+    },
+    "/company_members/{memberId}": {
+      "schema": { "$ref": "#/entities/CompanyMember" },
+      "description": "Tenant company membership records."
+    },
+    "/plans/{planId}": {
+      "schema": { "$ref": "#/entities/Plan" },
+      "description": "Subscription plans configured by administrator."
+    },
+    "/coupons/{couponId}": {
+      "schema": { "$ref": "#/entities/Coupon" },
+      "description": "Promotional discount coupons."
+    },
+    "/subscriptions/{subscriptionId}": {
+      "schema": { "$ref": "#/entities/Subscription" },
+      "description": "Company subscriptions synchronized with Mercado Pago."
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/Payment" },
+      "description": "Payment records for subscriptions."
+    },
+    "/revenues/{revenueId}": {
+      "schema": { "$ref": "#/entities/Revenue" },
+      "description": "Company revenues."
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Company expenses."
+    },
+    "/transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/Transaction" },
+      "description": "Unified company cash flow ledger."
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Company products catalog."
+    },
+    "/services/{serviceId}": {
+      "schema": { "$ref": "#/entities/Service" },
+      "description": "Company services catalog."
+    },
+    "/clients/{clientId}": {
+      "schema": { "$ref": "#/entities/Client" },
+      "description": "Customers managed by each tenant company."
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/Report" },
+      "description": "Generated financial report snapshots."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "In-app notifications per user."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Audit trail for administrative and billing events."
+    },
+    "/system_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/SystemSetting" },
+      "description": "Global platform configuration."
+    }
+  }
+}

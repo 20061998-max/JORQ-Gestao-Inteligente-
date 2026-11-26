@@ -1,0 +1,58 @@
+name: JORQ CI & Auto-Deploy Render
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  validate-and-build:
+    name: Validar Código, Regras e Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Instalar dependências
+        run: npm install
+
+      - name: Verificar tipagem TypeScript
+        run: npm run lint
+
+      - name: Auditar regras do Firestore
+        run: npx eslint firestore.rules
+
+      - name: Compilar aplicação de produção (Vite)
+        run: npm run build
+
+  deploy-render:
+    name: Disparar Auto-Deploy no Render
+    needs: validate-and-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Acionar Deploy Hook do Render
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "Disparando deploy automático no Render..."
+            curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_URL"
+            echo ""
+            echo "Deploy iniciado com sucesso no Render."
+          else
+            echo "RENDER_DEPLOY_HOOK_URL não definido nos Secrets do GitHub."
+            echo "Se o serviço no Render estiver conectado ao repositório (Auto-Deploy via render.yaml), o Render já iniciará o deploy automaticamente."
+          fi

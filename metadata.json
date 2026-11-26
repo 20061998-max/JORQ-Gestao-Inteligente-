@@ -1,0 +1,8 @@
+{
+  "name": "JORQ Gestão Inteligente",
+  "description": "Plataforma SaaS de gestão empresarial, controle financeiro, faturamento recorrente e inteligência financeira para empresas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
