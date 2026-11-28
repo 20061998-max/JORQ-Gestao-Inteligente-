@@ -12,6 +12,8 @@ interface PublicLayoutProps {
   onNavigate: (route: PublicRoute) => void;
   isAuthenticated: boolean;
   onEnterApp: () => void;
+  isAdmin?: boolean;
+  onEnterClientMode?: () => void;
   children: React.ReactNode;
 }
 
@@ -20,6 +22,8 @@ export function PublicLayout({
   onNavigate,
   isAuthenticated,
   onEnterApp,
+  isAdmin = false,
+  onEnterClientMode,
   children,
 }: PublicLayoutProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -74,6 +78,15 @@ export function PublicLayout({
           <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
             <LanguageSelector compact />
             <PWAInstallButton compact />
+            {isAuthenticated && isAdmin && onEnterClientMode && (
+              <button
+                type="button"
+                onClick={onEnterClientMode}
+                className="hidden sm:inline-flex items-center justify-center px-3.5 py-2 text-xs sm:text-sm font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                {t.adminNav.clientModeFree}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => (isAuthenticated ? onEnterApp() : handleNav('auth'))}
@@ -110,6 +123,18 @@ export function PublicLayout({
               <LanguageSelector />
               <PWAInstallButton fullWidth />
             </div>
+            {isAuthenticated && isAdmin && onEnterClientMode && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onEnterClientMode();
+                }}
+                className="w-full mt-2 px-4 py-2.5 text-sm font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg"
+              >
+                {t.adminNav.clientModeFree}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => (isAuthenticated ? onEnterApp() : handleNav('auth'))}
