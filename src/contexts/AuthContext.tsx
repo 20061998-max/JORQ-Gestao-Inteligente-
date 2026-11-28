@@ -21,6 +21,7 @@ import {
   getDocs,
   serverTimestamp,
   limit,
+  onSnapshot,
 } from 'firebase/firestore';
 import {
   auth,
@@ -239,6 +240,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     return () => unsub();
   }, [loadUserAndCompany]);
+
+  // Keep client company status & Cliente Teste trial synced in real time without page reload
+  useEffect(() => {
+    if (!firebaseUser || !firebaseUser.emailVerified) return;
+    const q = query(
+      collection(db, 'companies'),
+      where('ownerId', '==', firebaseUser.uid),
+      limit(1)
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        if (!snap.empty) {
+          const first = snap.docs[0];
+          setCompany({ id: first.id, ...(first.data() as Omit<Company, 'id'>) });
+        } else {
+          setCompany(null);
+        }
+      },
+      () => {
+        // ignore transient listener error; initial load handles primary read
+      }
+    );
+    return () => unsub();
+  }, [firebaseUser?.uid, firebaseUser?.emailVerified]);
 
   const signInWithGoogle = async () => {
     await signInWithPopup(auth, googleProvider);
