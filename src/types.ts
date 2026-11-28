@@ -26,6 +26,9 @@ export interface Company {
   logoUrl?: string;
   monthlyGoal?: number;
   status: 'active' | 'suspended' | 'trial';
+  trialExpiresAt?: string;
+  trialGrantedAt?: string;
+  trialNote?: string;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 }
@@ -86,6 +89,8 @@ export interface Subscription {
   baseMonthlyPrice: number;
   totalAmount: number;
   couponCode?: string;
+  couponRedeemed?: boolean;
+  adminActivated?: boolean;
   status: 'pending' | 'authorized' | 'paused' | 'cancelled' | 'overdue' | 'suspended';
   mpPreapprovalId?: string;
   mpInitPoint?: string;

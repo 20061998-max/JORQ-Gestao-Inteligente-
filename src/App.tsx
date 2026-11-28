@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { LanguageProvider, useLanguage } from './contexts/LanguageContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -16,17 +16,41 @@ import { ClientDashboard, type ClientTabId } from './pages/ClientDashboard';
 import { AdminDashboard } from './pages/AdminDashboard';
 import type { BillingCycle, Plan } from './types';
 
+const OWNER_VIEW_MODE_KEY = 'jorq_owner_view_mode';
+
 function AppRouter() {
   const { firebaseUser, emailVerified, company, isAdmin, authReady } = useAuth();
   const { t } = useLanguage();
   const [publicRoute, setPublicRoute] = useState<PublicRoute>('home');
-  const [inWorkspace, setInWorkspace] = useState(false);
-  const [viewMode, setViewMode] = useState<'client' | 'admin'>('client');
+  const [inWorkspace, setInWorkspace] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('mp_return') === '1';
+  });
+  const [viewMode, setViewMode] = useState<'client' | 'admin'>(() => {
+    if (typeof window === 'undefined') return 'client';
+    const isMpReturn = new URLSearchParams(window.location.search).get('mp_return') === '1';
+    if (isMpReturn) return 'client';
+    const saved = window.sessionStorage.getItem(OWNER_VIEW_MODE_KEY);
+    return saved === 'admin' ? 'admin' : 'client';
+  });
   const [preselectedPlanId, setPreselectedPlanId] = useState<string | undefined>();
   const [preselectedCycle, setPreselectedCycle] = useState<BillingCycle>('monthly');
   const [initialClientTab, setInitialClientTab] = useState<ClientTabId>('overview');
 
   const isAuthenticatedAndVerified = Boolean(firebaseUser && emailVerified);
+
+  const updateViewMode = (next: 'client' | 'admin') => {
+    setViewMode(next);
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(OWNER_VIEW_MODE_KEY, next);
+    }
+  };
+
+  useEffect(() => {
+    if (authReady && !firebaseUser && typeof window !== 'undefined') {
+      window.sessionStorage.removeItem(OWNER_VIEW_MODE_KEY);
+    }
+  }, [authReady, firebaseUser]);
 
   if (!authReady) {
     return (
@@ -66,14 +90,18 @@ function AppRouter() {
           }}
           onEnterClientMode={() => {
             setInitialClientTab('overview');
-            setViewMode('client');
+            updateViewMode('client');
           }}
         />
       );
     }
 
     if (!company) {
-      return <OnboardingPage />;
+      return (
+        <OnboardingPage
+          onBackToAdmin={isAdmin ? () => updateViewMode('admin') : undefined}
+        />
+      );
     }
 
     return (
@@ -81,7 +109,7 @@ function AppRouter() {
         initialTab={initialClientTab}
         preselectedPlanId={preselectedPlanId}
         preselectedCycle={preselectedCycle}
-        onOpenAdmin={isAdmin ? () => setViewMode('admin') : undefined}
+        onOpenAdmin={isAdmin ? () => updateViewMode('admin') : undefined}
         onGoPublicHome={() => {
           setInWorkspace(false);
           setPublicRoute('home');
@@ -100,21 +128,25 @@ function AppRouter() {
           }}
           onEnterClientMode={() => {
             setInitialClientTab('overview');
-            setViewMode('client');
+            updateViewMode('client');
             setInWorkspace(true);
           }}
         />
       );
     }
     if (!company) {
-      return <OnboardingPage />;
+      return (
+        <OnboardingPage
+          onBackToAdmin={isAdmin ? () => updateViewMode('admin') : undefined}
+        />
+      );
     }
     return (
       <ClientDashboard
         initialTab={initialClientTab}
         preselectedPlanId={preselectedPlanId}
         preselectedCycle={preselectedCycle}
-        onOpenAdmin={isAdmin ? () => setViewMode('admin') : undefined}
+        onOpenAdmin={isAdmin ? () => updateViewMode('admin') : undefined}
         onGoPublicHome={() => setPublicRoute('home')}
       />
     );
@@ -124,7 +156,7 @@ function AppRouter() {
     setPreselectedPlanId(plan.id);
     setPreselectedCycle(cycle);
     setInitialClientTab('subscription');
-    setViewMode('client');
+    updateViewMode('client');
     if (isAuthenticatedAndVerified) {
       setInWorkspace(true);
     } else {
@@ -132,25 +164,35 @@ function AppRouter() {
     }
   };
 
+  const handleEnterClientModeFromPublic = () => {
+    setInitialClientTab('overview');
+    updateViewMode('client');
+    setInWorkspace(true);
+  };
+
   return (
     <PublicLayout
       currentRoute={publicRoute}
       onNavigate={setPublicRoute}
       isAuthenticated={isAuthenticatedAndVerified}
+      isAdmin={isAdmin}
+      onEnterClientMode={isAdmin ? handleEnterClientModeFromPublic : undefined}
       onEnterApp={() => {
         setInitialClientTab('overview');
         setInWorkspace(true);
-        setViewMode(isAdmin ? 'admin' : 'client');
+        updateViewMode(isAdmin ? 'admin' : 'client');
       }}
     >
       {publicRoute === 'home' && (
         <LandingPage
           onNavigate={setPublicRoute}
           isAuthenticated={isAuthenticatedAndVerified}
+          isAdmin={isAdmin}
+          onEnterClientMode={isAdmin ? handleEnterClientModeFromPublic : undefined}
           onEnterApp={() => {
             setInitialClientTab('overview');
             setInWorkspace(true);
-            setViewMode(isAdmin ? 'admin' : 'client');
+            updateViewMode(isAdmin ? 'admin' : 'client');
           }}
         />
       )}
@@ -167,7 +209,7 @@ function AppRouter() {
         <AuthPage
           onSuccess={() => {
             setInWorkspace(true);
-            setViewMode(isAdmin ? 'admin' : 'client');
+            updateViewMode(isAdmin ? 'admin' : 'client');
           }}
         />
       )}
