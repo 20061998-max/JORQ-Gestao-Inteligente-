@@ -48,6 +48,74 @@ export function getDaysUntilDate(dateStr?: string | null): number | null {
   return Math.round((targetUtc - todayUtc) / (24 * 60 * 60 * 1000));
 }
 
+export function isIsoDateExpired(dateStr?: string | null, nowMs = Date.now()): boolean {
+  if (!dateStr) return false;
+  const ts = Date.parse(dateStr);
+  if (Number.isNaN(ts)) return false;
+  return ts <= nowMs;
+}
+
+export function getSubscriptionDueDateIso(sub: {
+  status?: string;
+  nextBillingDate?: string;
+  billingCycle: BillingCycle;
+  updatedAt?: { seconds?: number };
+  createdAt?: { seconds?: number };
+}): string | null {
+  if (sub.nextBillingDate) return sub.nextBillingDate;
+  const fallbackSec = sub.updatedAt?.seconds || sub.createdAt?.seconds;
+  if (sub.status === 'authorized' && fallbackSec) {
+    return addMonthsToDateIso(new Date(fallbackSec * 1000).toISOString(), sub.billingCycle);
+  }
+  return null;
+}
+
+export function isSubscriptionActiveAndValid(
+  sub: {
+    status: string;
+    nextBillingDate?: string;
+    billingCycle: BillingCycle;
+    updatedAt?: { seconds?: number };
+    createdAt?: { seconds?: number };
+  },
+  nowMs = Date.now()
+): boolean {
+  if (sub.status !== 'authorized') return false;
+  const dueIso = getSubscriptionDueDateIso(sub);
+  if (dueIso && isIsoDateExpired(dueIso, nowMs)) return false;
+  return true;
+}
+
+export function formatTrialRemaining(expiresAt?: string | null, nowMs = Date.now()): string {
+  if (!expiresAt) return '—';
+  const target = Date.parse(expiresAt);
+  if (Number.isNaN(target)) return '—';
+  const diffMs = target - nowMs;
+  if (diffMs <= 0) return 'Expirado';
+  const totalMinutes = Math.ceil(diffMs / 60000);
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  const remMin = totalMinutes % 60;
+  if (totalHours < 24) return remMin > 0 ? `${totalHours}h ${remMin}m` : `${totalHours}h`;
+  const days = Math.floor(totalHours / 24);
+  const remHours = totalHours % 24;
+  return remHours > 0 ? `${days}d ${remHours}h` : `${days} dia(s)`;
+}
+
+export function formatDateTimeBR(dateStr?: string | null, lang: SupportedLang = 'pt'): string {
+  if (!dateStr) return '—';
+  const parsed = new Date(dateStr);
+  if (Number.isNaN(parsed.getTime())) return dateStr;
+  const locale = lang === 'en' ? 'en-US' : lang === 'es' ? 'es-ES' : lang === 'fr' ? 'fr-FR' : 'pt-BR';
+  return parsed.toLocaleString(locale, {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export function safeExternalUrl(raw?: string | null): string | undefined {
   if (!raw) return undefined;
   try {
@@ -121,7 +189,7 @@ export function calculatePlanPrice(
   const grossTotal = Number((plan.monthlyPrice * months).toFixed(2));
   const afterCycleTotal = Number((grossTotal * (1 - cycleDiscountPercent / 100)).toFixed(2));
   const couponFactor = 1 - Math.max(0, Math.min(90, couponDiscountPercent)) / 100;
-  const finalTotal = Number((afterCycleTotal * couponFactor).toFixed(2));
+  const finalTotal = Math.max(1, Number((afterCycleTotal * couponFactor).toFixed(2)));
   const monthlyEquivalent = Number((finalTotal / months).toFixed(2));
 
   return {
