@@ -13,11 +13,19 @@ import {
   onSnapshot,
   runTransaction,
   serverTimestamp,
+  writeBatch,
+  type DocumentReference,
   type Unsubscribe,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage, OperationType, handleFirestoreError } from '../firebase';
 import { addMonthsToDateIso } from '../utils/format';
+import {
+  applyBackupLocalPreferences,
+  type AdminPlatformBackupPayload,
+  type CompanyBackupPayload,
+} from '../utils/backup';
+import type { SupportedLang } from '../i18n/translations';
 import type {
   AppNotification,
   AuditLog,
@@ -958,6 +966,7 @@ export async function adminUpdateSubscriptionStatus(
 ): Promise<void> {
   const payload: Record<string, unknown> = {
     status,
+    mpStatus: status === 'authorized' ? 'authorized' : status,
     adminActivated: status === 'authorized',
     updatedAt: serverTimestamp(),
   };
@@ -1011,6 +1020,462 @@ export async function adminSaveSystemSettings(
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'system_settings/global');
   }
+}
+
+export interface BackupImportSummary {
+  importedCounts: {
+    revenues: number;
+    expenses: number;
+    transactions: number;
+    products: number;
+    services: number;
+    clients: number;
+    savedReports: number;
+    total: number;
+  };
+  skippedDuplicates: number;
+  companyUpdated: boolean;
+  appliedLanguage?: SupportedLang;
+}
+
+export async function importCompanyBackupData(params: {
+  companyId: string;
+  userId: string;
+  backup: CompanyBackupPayload;
+  restoreCompanyProfile?: boolean;
+}): Promise<BackupImportSummary> {
+  const { companyId, userId, backup, restoreCompanyProfile = true } = params;
+
+  const fetchCollection = async (colName: string) => {
+    const snap = await getDocs(
+      query(
+        collection(db, colName),
+        where('userId', '==', userId),
+        where('companyId', '==', companyId)
+      )
+    );
+    return snap.docs.map((d) => d.data() as Record<string, unknown>);
+  };
+
+  const [
+    existingRevenues,
+    existingExpenses,
+    existingTransactions,
+    existingProducts,
+    existingServices,
+    existingClients,
+    existingReports,
+  ] = await Promise.all([
+    fetchCollection('revenues'),
+    fetchCollection('expenses'),
+    fetchCollection('transactions'),
+    fetchCollection('products'),
+    fetchCollection('services'),
+    fetchCollection('clients'),
+    fetchCollection('reports'),
+  ]);
+
+  const revKey = (d: { date?: unknown; amount?: unknown; description?: unknown; category?: unknown }) =>
+    `${String(d.date || '')}|${Number(d.amount || 0).toFixed(2)}|${String(d.description || '')
+      .trim()
+      .toLowerCase()}|${String(d.category || '')
+      .trim()
+      .toLowerCase()}`;
+
+  const txKey = (d: {
+    type?: unknown;
+    date?: unknown;
+    amount?: unknown;
+    description?: unknown;
+    category?: unknown;
+  }) =>
+    `${String(d.type || '')}|${String(d.date || '')}|${Number(d.amount || 0).toFixed(2)}|${String(
+      d.description || ''
+    )
+      .trim()
+      .toLowerCase()}|${String(d.category || '')
+      .trim()
+      .toLowerCase()}`;
+
+  const prodKey = (d: { name?: unknown; sku?: unknown }) =>
+    `${String(d.name || '').trim().toLowerCase()}|${String(d.sku || '').trim().toLowerCase()}`;
+
+  const svcKey = (d: { name?: unknown; category?: unknown }) =>
+    `${String(d.name || '').trim().toLowerCase()}|${String(d.category || '').trim().toLowerCase()}`;
+
+  const clientKey = (d: { name?: unknown; document?: unknown; email?: unknown }) =>
+    `${String(d.name || '').trim().toLowerCase()}|${String(d.document || d.email || '')
+      .trim()
+      .toLowerCase()}`;
+
+  const reportKey = (d: {
+    type?: unknown;
+    title?: unknown;
+    periodStart?: unknown;
+    periodEnd?: unknown;
+    totalRevenue?: unknown;
+  }) =>
+    `${String(d.type || '')}|${String(d.title || '')
+      .trim()
+      .toLowerCase()}|${String(d.periodStart || '')}|${String(d.periodEnd || '')}|${Number(
+      d.totalRevenue || 0
+    ).toFixed(2)}`;
+
+  const existingRevSet = new Set(existingRevenues.map(revKey));
+  const existingExpSet = new Set(existingExpenses.map(revKey));
+  const existingTxSet = new Set(existingTransactions.map(txKey));
+  const existingProdSet = new Set(existingProducts.map(prodKey));
+  const existingSvcSet = new Set(existingServices.map(svcKey));
+  const existingClientSet = new Set(existingClients.map(clientKey));
+  const existingReportSet = new Set(existingReports.map(reportKey));
+
+  const queuedWrites: { ref: DocumentReference; data: Record<string, unknown> }[] = [];
+  let skippedDuplicates = 0;
+  const importedCounts = {
+    revenues: 0,
+    expenses: 0,
+    transactions: 0,
+    products: 0,
+    services: 0,
+    clients: 0,
+    savedReports: 0,
+    total: 0,
+  };
+
+  for (const item of backup.data.revenues) {
+    const key = revKey(item);
+    if (existingRevSet.has(key)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    existingRevSet.add(key);
+    const clean: Record<string, unknown> = {
+      companyId,
+      userId,
+      description: item.description,
+      category: item.category,
+      amount: item.amount,
+      date: item.date,
+      status: item.status,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+    if (item.customerName) clean.customerName = item.customerName;
+    if (item.paymentMethod) clean.paymentMethod = item.paymentMethod;
+    if (item.notes) clean.notes = item.notes;
+    queuedWrites.push({ ref: doc(collection(db, 'revenues')), data: clean });
+    importedCounts.revenues += 1;
+  }
+
+  for (const item of backup.data.expenses) {
+    const key = revKey(item);
+    if (existingExpSet.has(key)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    existingExpSet.add(key);
+    const clean: Record<string, unknown> = {
+      companyId,
+      userId,
+      description: item.description,
+      category: item.category,
+      amount: item.amount,
+      date: item.date,
+      status: item.status,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+    if (item.supplierName) clean.supplierName = item.supplierName;
+    if (item.paymentMethod) clean.paymentMethod = item.paymentMethod;
+    if (item.notes) clean.notes = item.notes;
+    queuedWrites.push({ ref: doc(collection(db, 'expenses')), data: clean });
+    importedCounts.expenses += 1;
+  }
+
+  for (const item of backup.data.transactions) {
+    const key = txKey(item);
+    if (existingTxSet.has(key)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    existingTxSet.add(key);
+    const clean: Record<string, unknown> = {
+      companyId,
+      userId,
+      type: item.type,
+      description: item.description,
+      category: item.category,
+      amount: item.amount,
+      date: item.date,
+      status: item.status,
+      createdAt: serverTimestamp(),
+    };
+    if (item.sourceId) clean.sourceId = item.sourceId;
+    queuedWrites.push({ ref: doc(collection(db, 'transactions')), data: clean });
+    importedCounts.transactions += 1;
+  }
+
+  for (const item of backup.data.products) {
+    const key = prodKey(item);
+    if (existingProdSet.has(key)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    existingProdSet.add(key);
+    const clean: Record<string, unknown> = {
+      companyId,
+      userId,
+      name: item.name,
+      price: item.price,
+      cost: item.cost,
+      stock: item.stock,
+      active: item.active,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+    if (item.sku) clean.sku = item.sku;
+    if (item.category) clean.category = item.category;
+    if (item.unit) clean.unit = item.unit;
+    queuedWrites.push({ ref: doc(collection(db, 'products')), data: clean });
+    importedCounts.products += 1;
+  }
+
+  for (const item of backup.data.services) {
+    const key = svcKey(item);
+    if (existingSvcSet.has(key)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    existingSvcSet.add(key);
+    const clean: Record<string, unknown> = {
+      companyId,
+      userId,
+      name: item.name,
+      price: item.price,
+      estimatedCost: item.estimatedCost,
+      active: item.active,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+    if (item.category) clean.category = item.category;
+    if (item.billingUnit) clean.billingUnit = item.billingUnit;
+    queuedWrites.push({ ref: doc(collection(db, 'services')), data: clean });
+    importedCounts.services += 1;
+  }
+
+  for (const item of backup.data.clients) {
+    const key = clientKey(item);
+    if (existingClientSet.has(key)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    existingClientSet.add(key);
+    const clean: Record<string, unknown> = {
+      companyId,
+      userId,
+      name: item.name,
+      status: item.status,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+    if (item.document) clean.document = item.document;
+    if (item.email) clean.email = item.email;
+    if (item.phone) clean.phone = item.phone;
+    if (item.city) clean.city = item.city;
+    if (item.notes) clean.notes = item.notes;
+    queuedWrites.push({ ref: doc(collection(db, 'clients')), data: clean });
+    importedCounts.clients += 1;
+  }
+
+  for (const item of backup.data.savedReports) {
+    const key = reportKey(item);
+    if (existingReportSet.has(key)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    existingReportSet.add(key);
+    const clean: Record<string, unknown> = {
+      companyId,
+      userId,
+      title: item.title,
+      type: item.type,
+      totalRevenue: item.totalRevenue,
+      totalExpense: item.totalExpense,
+      netProfit: item.netProfit,
+      createdAt: serverTimestamp(),
+    };
+    if (item.periodStart) clean.periodStart = item.periodStart;
+    if (item.periodEnd) clean.periodEnd = item.periodEnd;
+    queuedWrites.push({ ref: doc(collection(db, 'reports')), data: clean });
+    importedCounts.savedReports += 1;
+  }
+
+  importedCounts.total =
+    importedCounts.revenues +
+    importedCounts.expenses +
+    importedCounts.transactions +
+    importedCounts.products +
+    importedCounts.services +
+    importedCounts.clients +
+    importedCounts.savedReports;
+
+  try {
+    const CHUNK_SIZE = 400;
+    for (let i = 0; i < queuedWrites.length; i += CHUNK_SIZE) {
+      const batch = writeBatch(db);
+      const chunk = queuedWrites.slice(i, i + CHUNK_SIZE);
+      chunk.forEach((op) => batch.set(op.ref, op.data));
+      await batch.commit();
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `backup_import/${companyId}`);
+  }
+
+  let companyUpdated = false;
+  if (restoreCompanyProfile) {
+    const companyPatch: Partial<
+      Pick<Company, 'name' | 'tradeName' | 'document' | 'phone' | 'address' | 'sector' | 'logoUrl'>
+    > = {};
+    if (backup.company.name && backup.company.name.length >= 2) {
+      companyPatch.name = backup.company.name;
+    }
+    if (backup.company.tradeName !== undefined) companyPatch.tradeName = backup.company.tradeName;
+    if (backup.company.document !== undefined) companyPatch.document = backup.company.document;
+    if (backup.company.phone !== undefined) companyPatch.phone = backup.company.phone;
+    if (backup.company.address !== undefined) companyPatch.address = backup.company.address;
+    if (backup.company.sector !== undefined) companyPatch.sector = backup.company.sector;
+    if (backup.company.logoUrl !== undefined) companyPatch.logoUrl = backup.company.logoUrl;
+
+    if (Object.keys(companyPatch).length > 0) {
+      await updateCompanySettings(companyId, companyPatch);
+      companyUpdated = true;
+    }
+
+    if (typeof backup.company.monthlyGoal === 'number' && backup.company.monthlyGoal >= 0) {
+      await saveCompanyGoal(companyId, userId, backup.company.monthlyGoal);
+      companyUpdated = true;
+    }
+  }
+
+  const appliedLanguage = applyBackupLocalPreferences(backup.localPreferences, userId);
+
+  return {
+    importedCounts,
+    skippedDuplicates,
+    companyUpdated,
+    appliedLanguage,
+  };
+}
+
+export interface AdminBackupImportSummary {
+  plansImported: number;
+  couponsImported: number;
+  skippedDuplicates: number;
+  settingsUpdated: boolean;
+  appliedLanguage?: SupportedLang;
+}
+
+export async function importAdminPlatformBackupData(params: {
+  adminUid: string;
+  adminEmail: string;
+  backup: AdminPlatformBackupPayload;
+  existingPlans: Plan[];
+  existingCoupons: Coupon[];
+  restoreSystemSettings?: boolean;
+}): Promise<AdminBackupImportSummary> {
+  const {
+    adminUid,
+    adminEmail,
+    backup,
+    existingPlans,
+    existingCoupons,
+    restoreSystemSettings = true,
+  } = params;
+
+  const existingPlanNames = new Set(
+    existingPlans.map((p) => p.name.trim().toLowerCase())
+  );
+  const existingCouponCodes = new Set(
+    existingCoupons.map((c) => c.code.trim().toUpperCase())
+  );
+
+  let plansImported = 0;
+  let couponsImported = 0;
+  let skippedDuplicates = 0;
+
+  for (const p of backup.config.plans) {
+    const key = p.name.trim().toLowerCase();
+    if (existingPlanNames.has(key)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    existingPlanNames.add(key);
+    const clean: Record<string, unknown> = {
+      name: p.name,
+      targetAudience: p.targetAudience,
+      monthlyPrice: p.monthlyPrice,
+      discountMonthly: p.discountMonthly,
+      discountQuarterly: p.discountQuarterly,
+      discountSemiannual: p.discountSemiannual,
+      discountAnnual: p.discountAnnual,
+      maxUsers: p.maxUsers,
+      maxTransactions: p.maxTransactions,
+      aiQueriesLimit: p.aiQueriesLimit,
+      features: p.features,
+      active: p.active,
+      sortOrder: p.sortOrder,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+    if (p.description) clean.description = p.description;
+    if (p.maxProducts !== undefined) clean.maxProducts = p.maxProducts;
+    await addDoc(collection(db, 'plans'), clean);
+    plansImported += 1;
+  }
+
+  for (const c of backup.config.coupons) {
+    const code = c.code.trim().toUpperCase();
+    if (existingCouponCodes.has(code)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    existingCouponCodes.add(code);
+    const clean: Record<string, unknown> = {
+      code,
+      discountPercent: c.discountPercent,
+      maxUses: c.maxUses,
+      usedCount: Math.min(c.usedCount, c.maxUses),
+      active: c.active,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+    if (c.expiresAt) clean.expiresAt = c.expiresAt;
+    await addDoc(collection(db, 'coupons'), clean);
+    couponsImported += 1;
+  }
+
+  let settingsUpdated = false;
+  if (restoreSystemSettings && backup.systemSettings.platformName.length >= 2) {
+    await adminSaveSystemSettings({
+      platformName: backup.systemSettings.platformName,
+      supportEmail: backup.systemSettings.supportEmail || adminEmail,
+      mpEnvironment: backup.systemSettings.mpEnvironment,
+      defaultCurrency: 'BRL',
+      maintenanceMode: backup.systemSettings.maintenanceMode,
+      updatedBy: adminUid,
+    });
+    settingsUpdated = true;
+  }
+
+  const appliedLanguage = applyBackupLocalPreferences(backup.localPreferences, adminUid);
+
+  return {
+    plansImported,
+    couponsImported,
+    skippedDuplicates,
+    settingsUpdated,
+    appliedLanguage,
+  };
 }
 
 export type {
