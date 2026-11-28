@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BarChart3,
   Bell,
   BookOpen,
   Brain,
+  Clock,
   CreditCard,
   FileText,
   LayoutDashboard,
@@ -27,10 +28,13 @@ import { JorqLogo } from '../components/JorqLogo';
 import { LanguageSelector } from '../components/LanguageSelector';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 import {
+  markSubscriptionOverdueClient,
+  redeemCouponForSubscriptionClient,
   subscribeCompanyCollection,
   subscribeCompanyGoal,
   subscribePublicPlans,
   subscribeUserNotifications,
+  syncConfirmedSubscriptionClient,
   type AppNotification,
   type CustomerClient,
   type Expense,
@@ -49,7 +53,15 @@ import { CatalogClientsTab } from './dashboard/CatalogClientsTab';
 import { ReportsAiTab } from './dashboard/ReportsAiTab';
 import { SubscriptionSettingsTab } from './dashboard/SubscriptionSettingsTab';
 import { HelpManualPage } from './HelpManualPage';
-import { addMonthsToDateIso, formatDateBR, getDaysUntilDate } from '../utils/format';
+import {
+  formatDateBR,
+  formatDateTimeBR,
+  formatTrialRemaining,
+  getDaysUntilDate,
+  getSubscriptionDueDateIso,
+  isIsoDateExpired,
+  isSubscriptionActiveAndValid,
+} from '../utils/format';
 import type { BillingCycle } from '../types';
 
 export type ClientTabId =
@@ -98,38 +110,214 @@ export function ClientDashboard({
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [privateGoal, setPrivateGoal] = useState<number | null>(null);
   const [serverAccessVerified, setServerAccessVerified] = useState(false);
+  const [serverPaidAccessVerified, setServerPaidAccessVerified] = useState(false);
   const [accessChecked, setAccessChecked] = useState(isAdmin);
   const [subsLoaded, setSubsLoaded] = useState(false);
-  const [autoSyncAttemptedId, setAutoSyncAttemptedId] = useState('');
   const [verifyingPaywall, setVerifyingPaywall] = useState(false);
   const [preferredPaymentMode, setPreferredPaymentMode] = useState<'pix' | 'recurring'>('pix');
   const [renewPlanId, setRenewPlanId] = useState<string | undefined>(preselectedPlanId);
   const [renewCycle, setRenewCycle] = useState<BillingCycle | undefined>(preselectedCycle);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const checkServerAccess = useCallback(async () => {
+  const initialMpReturnRef = useRef<{
+    mpReturn: boolean;
+    preapprovalId: string;
+    paymentId: string;
+    subscriptionId: string;
+  } | null>(null);
+  if (initialMpReturnRef.current === null && typeof window !== 'undefined') {
+    const p = new URLSearchParams(window.location.search);
+    initialMpReturnRef.current = {
+      mpReturn: p.get('mp_return') === '1',
+      preapprovalId: p.get('preapproval_id') || '',
+      paymentId: p.get('payment_id') || p.get('collection_id') || '',
+      subscriptionId: p.get('subscriptionId') || p.get('external_reference') || '',
+    };
+  }
+
+  const lastSyncSignatureRef = useRef('');
+  const markedOverdueIdsRef = useRef<Set<string>>(new Set());
+
+  // Live clock to revoke expired trials or expired plans in real time
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 30000);
+
+    const candidateExpiries: number[] = [];
+    if (company?.status === 'trial' && company.trialExpiresAt) {
+      const ts = Date.parse(company.trialExpiresAt);
+      if (!Number.isNaN(ts)) candidateExpiries.push(ts);
+    }
+    subscriptions.forEach((s) => {
+      if (s.status === 'authorized') {
+        const due = getSubscriptionDueDateIso(s);
+        if (due) {
+          const ts = Date.parse(due);
+          if (!Number.isNaN(ts)) candidateExpiries.push(ts);
+        }
+      }
+    });
+
+    const soonestMs = candidateExpiries
+      .map((ts) => ts - Date.now())
+      .filter((diff) => diff > 0 && diff <= 24 * 60 * 60 * 1000)
+      .sort((a, b) => a - b)[0];
+
+    const timer =
+      typeof soonestMs === 'number'
+        ? window.setTimeout(() => {
+            setNowMs(Date.now());
+          }, soonestMs + 1000)
+        : null;
+
+    return () => {
+      window.clearInterval(interval);
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [company?.status, company?.trialExpiresAt, subscriptions]);
+
+  const isTrialConfigured = company?.status === 'trial' && Boolean(company.trialExpiresAt);
+  const isTrialValid = Boolean(
+    isTrialConfigured && !isIsoDateExpired(company?.trialExpiresAt, nowMs)
+  );
+  const isTrialExpired = Boolean(
+    isTrialConfigured && isIsoDateExpired(company?.trialExpiresAt, nowMs)
+  );
+
+  const hasAdminActivatedSub = subscriptions.some(
+    (s) => s.adminActivated === true && isSubscriptionActiveAndValid(s, nowMs)
+  );
+  const hasAnyValidSub = subscriptions.some((s) => isSubscriptionActiveAndValid(s, nowMs));
+  const hasExpiredPlanOnly =
+    !isTrialValid &&
+    !hasAnyValidSub &&
+    subscriptions.some(
+      (s) =>
+        s.status === 'overdue' ||
+        (s.status === 'authorized' && !isSubscriptionActiveAndValid(s, nowMs))
+    );
+
+  const hasPaidAccess =
+    Boolean(company) &&
+    company!.status !== 'suspended' &&
+    (isAdmin ||
+      isTrialValid ||
+      hasAdminActivatedSub ||
+      ((hasAnyValidSub || serverPaidAccessVerified) && !hasExpiredPlanOnly) ||
+      (serverAccessVerified && !isTrialExpired && !hasExpiredPlanOnly));
+  const accessReady = isAdmin || (accessChecked && subsLoaded);
+
+  const syncCompanyAccess = useCallback(async () => {
     if (!company || !firebaseUser) return;
     try {
       const token = await getIdToken();
-      const res = await fetch(`/api/mercadopago/company-access/${company.id}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const pendingReturn = initialMpReturnRef.current?.mpReturn
+        ? initialMpReturnRef.current
+        : undefined;
+
+      const res = await fetch('/api/mercadopago/sync-company-access', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          companyId: company.id,
+          subscriptionChecks: subscriptions
+            .filter((s) => s.status !== 'cancelled')
+            .map((s) => ({
+              subscriptionId: s.id,
+              mpPreapprovalId: s.mpPreapprovalId,
+              couponCode: s.couponCode,
+              couponRedeemed: s.couponRedeemed,
+              billingCycle: s.billingCycle,
+              status: s.status,
+              nextBillingDate: s.nextBillingDate,
+            })),
+          returnParams: pendingReturn
+            ? {
+                preapprovalId: pendingReturn.preapprovalId || undefined,
+                paymentId: pendingReturn.paymentId || undefined,
+                subscriptionId: pendingReturn.subscriptionId || undefined,
+              }
+            : undefined,
+        }),
       });
+
       if (res.ok) {
-        const data = await res.json();
+        const data = (await res.json()) as {
+          verified: boolean;
+          paidSubActive?: boolean;
+          activeRecord?: unknown;
+          syncedSubscriptions?: Array<{
+            subscriptionId: string;
+            mpPreapprovalId?: string;
+            status: string;
+            mpStatus?: string;
+            nextBillingDate?: string | null;
+            paidAt?: string;
+            expired?: boolean;
+          }>;
+        };
         setServerAccessVerified(Boolean(data.verified));
+        setServerPaidAccessVerified(Boolean(data.paidSubActive ?? data.activeRecord));
+
+        if (Array.isArray(data.syncedSubscriptions)) {
+          for (const item of data.syncedSubscriptions) {
+            const localSub = subscriptions.find((s) => s.id === item.subscriptionId);
+            if (item.status === 'authorized' && !item.expired && item.subscriptionId) {
+              await syncConfirmedSubscriptionClient({
+                subscriptionId: item.subscriptionId,
+                companyId: company.id,
+                userId: firebaseUser.uid,
+                mpPreapprovalId: item.mpPreapprovalId,
+                mpStatus: item.mpStatus || 'authorized',
+                nextBillingDate: item.nextBillingDate,
+                paidAt: item.paidAt,
+              });
+              if (localSub?.couponCode && !localSub?.couponRedeemed) {
+                await redeemCouponForSubscriptionClient(item.subscriptionId, localSub.couponCode);
+              }
+            } else if (
+              (item.expired || item.status === 'overdue') &&
+              localSub?.status === 'authorized' &&
+              !markedOverdueIdsRef.current.has(localSub.id)
+            ) {
+              markedOverdueIdsRef.current.add(localSub.id);
+              await markSubscriptionOverdueClient(localSub.id);
+            }
+          }
+        }
+
+        if (pendingReturn) {
+          initialMpReturnRef.current = {
+            mpReturn: false,
+            preapprovalId: '',
+            paymentId: '',
+            subscriptionId: '',
+          };
+          setActiveTab('subscription');
+          if (typeof window !== 'undefined' && window.location.search) {
+            window.history.replaceState({}, '', window.location.pathname);
+          }
+        }
+      } else {
+        const fallbackRes = await fetch(`/api/mercadopago/company-access/${company.id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (fallbackRes.ok) {
+          const fallbackData = await fallbackRes.json();
+          setServerAccessVerified(Boolean(fallbackData.verified));
+          setServerPaidAccessVerified(Boolean(fallbackData.paidSubActive ?? fallbackData.record));
+        }
       }
     } catch {
       // ignore transient network check
     } finally {
       setAccessChecked(true);
     }
-  }, [company, firebaseUser, getIdToken]);
-
-  const hasAuthorizedFirestoreSub = subscriptions.some((s) => s.status === 'authorized');
-  const hasPaidAccess =
-    Boolean(company) &&
-    company!.status !== 'suspended' &&
-    (isAdmin || serverAccessVerified || hasAuthorizedFirestoreSub);
-  const accessReady = isAdmin || (accessChecked && subsLoaded);
+  }, [company, firebaseUser, getIdToken, subscriptions]);
 
   const LOCKED_TABS: ClientTabId[] = [
     'overview',
@@ -149,76 +337,58 @@ export function ClientDashboard({
     }
   }, [accessReady, hasPaidAccess, hasInteractedNav, activeTab]);
 
-  // Auto-reverify latest Mercado Pago preapproval on server in case of server restart
+  // Mark any expired Firestore authorized subscriptions as overdue automatically
   useEffect(() => {
-    if (!company || !firebaseUser || isAdmin || serverAccessVerified) return;
-    const subWithMp =
-      subscriptions.find((s) => s.status === 'authorized' && Boolean(s.mpPreapprovalId)) ||
-      subscriptions.find((s) => Boolean(s.mpPreapprovalId));
-    if (!subWithMp?.mpPreapprovalId || autoSyncAttemptedId === subWithMp.mpPreapprovalId) return;
-    setAutoSyncAttemptedId(subWithMp.mpPreapprovalId);
-    getIdToken()
-      .then((token) =>
-        fetch('/api/mercadopago/verify-subscription', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            preapprovalId: subWithMp.mpPreapprovalId,
-            subscriptionId: subWithMp.id,
-            companyId: company.id,
-          }),
-        })
-      )
-      .then(() => checkServerAccess())
-      .catch(() => {});
+    if (!subsLoaded || !company || isAdmin) return;
+    subscriptions.forEach((s) => {
+      if (
+        s.status === 'authorized' &&
+        !isSubscriptionActiveAndValid(s, nowMs) &&
+        !markedOverdueIdsRef.current.has(s.id)
+      ) {
+        markedOverdueIdsRef.current.add(s.id);
+        markSubscriptionOverdueClient(s.id);
+      }
+    });
+  }, [subsLoaded, company, isAdmin, subscriptions, nowMs]);
+
+  // Synchronize company access with Mercado Pago + Firestore + trials when ready or changed
+  useEffect(() => {
+    if (!company || !firebaseUser || !subsLoaded) return;
+    if (isAdmin) {
+      setAccessChecked(true);
+      setServerAccessVerified(true);
+      setServerPaidAccessVerified(true);
+      return;
+    }
+
+    const sig = [
+      company.id,
+      company.status,
+      company.trialExpiresAt || '',
+      isTrialExpired ? 'te' : 'tv',
+      hasExpiredPlanOnly ? 'pe' : 'pv',
+      initialMpReturnRef.current?.mpReturn ? 'ret' : 'noret',
+      subscriptions.map((s) => `${s.id}:${s.mpPreapprovalId || ''}:${s.status}`).join(','),
+    ].join('|');
+
+    if (lastSyncSignatureRef.current === sig) return;
+    lastSyncSignatureRef.current = sig;
+    syncCompanyAccess();
   }, [
     company,
     firebaseUser,
+    subsLoaded,
     isAdmin,
-    serverAccessVerified,
     subscriptions,
-    autoSyncAttemptedId,
-    getIdToken,
-    checkServerAccess,
+    isTrialExpired,
+    hasExpiredPlanOnly,
+    syncCompanyAccess,
   ]);
-
-  // If returning from Mercado Pago checkout, NEVER trust query parameters; query backend directly
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('mp_return') === '1' && company && firebaseUser) {
-      const preapprovalId = params.get('preapproval_id') || subscriptions[0]?.mpPreapprovalId;
-      const subId = params.get('subscriptionId') || subscriptions[0]?.id;
-      if (preapprovalId) {
-        getIdToken()
-          .then((token) =>
-            fetch('/api/mercadopago/verify-subscription', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`,
-              },
-              body: JSON.stringify({
-                preapprovalId,
-                subscriptionId: subId,
-                companyId: company.id,
-              }),
-            })
-          )
-          .then(() => checkServerAccess())
-          .catch(() => {});
-      }
-      setActiveTab('subscription');
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-  }, [company, firebaseUser, subscriptions, getIdToken, checkServerAccess]);
 
   // Always subscribe to billing, plans & notifications
   useEffect(() => {
     if (!company || !firebaseUser) return;
-    checkServerAccess();
 
     const unsubs = [
       subscribeCompanyCollection<Subscription>(
@@ -238,9 +408,9 @@ export function ClientDashboard({
     return () => {
       unsubs.forEach((u) => u());
     };
-  }, [company, firebaseUser, checkServerAccess]);
+  }, [company, firebaseUser]);
 
-  // Subscribe to operational workspace collections ONLY when paid access is active
+  // Subscribe to operational workspace collections ONLY when paid/trial/owner access is active
   useEffect(() => {
     if (!company || !firebaseUser || !hasPaidAccess) return;
 
@@ -271,27 +441,9 @@ export function ClientDashboard({
   const latestSubWithMp = subscriptions.find((s) => Boolean(s.mpPreapprovalId));
 
   const handlePaywallVerifyNow = async () => {
-    if (!latestSubWithMp?.mpPreapprovalId) {
-      setHasInteractedNav(true);
-      setActiveTab('subscription');
-      return;
-    }
     setVerifyingPaywall(true);
     try {
-      const token = await getIdToken();
-      await fetch('/api/mercadopago/verify-subscription', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          preapprovalId: latestSubWithMp.mpPreapprovalId,
-          subscriptionId: latestSubWithMp.id,
-          companyId: company.id,
-        }),
-      });
-      await checkServerAccess();
+      await syncCompanyAccess();
     } finally {
       setVerifyingPaywall(false);
     }
@@ -300,32 +452,25 @@ export function ClientDashboard({
   const unreadCount = notifications.filter((n) => !n.read).length;
 
   const primaryBillingSub =
-    subscriptions.find((s) => s.status === 'authorized') ||
-    subscriptions.find((s) => s.status === 'overdue') ||
+    subscriptions.find((s) => isSubscriptionActiveAndValid(s, nowMs)) ||
+    subscriptions.find((s) => s.status === 'overdue' || (s.status === 'authorized' && !isSubscriptionActiveAndValid(s, nowMs))) ||
     subscriptions[0] ||
     null;
-  const primaryFallbackSec =
-    primaryBillingSub?.updatedAt?.seconds || primaryBillingSub?.createdAt?.seconds;
-  const primaryDueDateIso =
-    primaryBillingSub?.nextBillingDate ||
-    (primaryBillingSub?.status === 'authorized' && primaryFallbackSec
-      ? addMonthsToDateIso(
-          new Date(primaryFallbackSec * 1000).toISOString(),
-          primaryBillingSub.billingCycle
-        )
-      : null);
+  const primaryDueDateIso = primaryBillingSub ? getSubscriptionDueDateIso(primaryBillingSub) : null;
   const primaryDaysLeft = getDaysUntilDate(primaryDueDateIso);
+  const isClientOverdue =
+    primaryBillingSub?.status === 'overdue' ||
+    (primaryBillingSub?.status === 'authorized' && !isSubscriptionActiveAndValid(primaryBillingSub, nowMs)) ||
+    (primaryDaysLeft !== null && primaryDaysLeft < 0);
   const showClientDueBanner =
     !isAdmin &&
+    !isTrialValid &&
     accessReady &&
     Boolean(primaryBillingSub) &&
-    (primaryBillingSub!.status === 'overdue' ||
+    (isClientOverdue ||
       (primaryBillingSub!.status === 'authorized' &&
         primaryDaysLeft !== null &&
         primaryDaysLeft <= 5));
-  const isClientOverdue =
-    primaryBillingSub?.status === 'overdue' ||
-    (primaryDaysLeft !== null && primaryDaysLeft < 0);
 
   const navItems: { id: ClientTabId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'overview', label: t.clientNav.overview, icon: LayoutDashboard },
@@ -523,6 +668,50 @@ export function ClientDashboard({
         </header>
 
         <main className="flex-1 p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">
+          {!isAdmin && isTrialValid && company.trialExpiresAt && (
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-indigo-950">
+              <div className="flex items-start gap-3">
+                <Clock className="w-5 h-5 text-indigo-700 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-bold">
+                    {pick({
+                      pt: `Modo Cliente Teste Ativo · Tempo restante: ${formatTrialRemaining(company.trialExpiresAt, nowMs)}`,
+                      en: `Test Client Mode Active · Remaining: ${formatTrialRemaining(company.trialExpiresAt, nowMs)}`,
+                      es: `Modo Cliente de Prueba Activo · Tiempo restante: ${formatTrialRemaining(company.trialExpiresAt, nowMs)}`,
+                      fr: `Mode Client Test Actif · Temps restant : ${formatTrialRemaining(company.trialExpiresAt, nowMs)}`,
+                    })}
+                  </p>
+                  <p className="text-xs mt-0.5 text-indigo-800">
+                    {pick({
+                      pt: `Acesso gratuito liberado pelo administrador até ${formatDateTimeBR(company.trialExpiresAt, lang)}. Após o prazo, será necessário assinar um plano.`,
+                      en: `Free access granted by administrator until ${formatDateTimeBR(company.trialExpiresAt, lang)}. A plan subscription will be required afterward.`,
+                      es: `Acceso gratuito liberado por el administrador hasta ${formatDateTimeBR(company.trialExpiresAt, lang)}. Luego será necesario contratar un plan.`,
+                      fr: `Accès gratuit accordé jusqu'au ${formatDateTimeBR(company.trialExpiresAt, lang)}. Un abonnement sera requis ensuite.`,
+                    })}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setHasInteractedNav(true);
+                  setActiveTab('subscription');
+                }}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] shrink-0 cursor-pointer"
+              >
+                <CreditCard className="w-3.5 h-3.5" />
+                <span>
+                  {pick({
+                    pt: 'Escolher Plano Definitivo',
+                    en: 'Choose a Plan',
+                    es: 'Elegir Plan',
+                    fr: 'Choisir une Offre',
+                  })}
+                </span>
+              </button>
+            </div>
+          )}
+
           {showClientDueBanner && primaryBillingSub && (
             <div
               className={`rounded-xl border p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
@@ -625,12 +814,26 @@ export function ClientDashboard({
                       es: 'Acceso de la empresa suspendido',
                       fr: 'Accès entreprise suspendu',
                     })
-                  : pick({
-                      pt: 'Assinatura necessária para liberar o sistema',
-                      en: 'Active subscription required to unlock the workspace',
-                      es: 'Suscripción activa necesaria para liberar el sistema',
-                      fr: 'Abonnement actif requis pour débloquer le système',
-                    })}
+                  : isTrialExpired
+                    ? pick({
+                        pt: 'Seu período de teste gratuito encerrou',
+                        en: 'Your free test period has ended',
+                        es: 'Tu período de prueba gratuito ha finalizado',
+                        fr: 'Votre période d’essai gratuit est terminée',
+                      })
+                    : hasExpiredPlanOnly
+                      ? pick({
+                          pt: 'Seu plano expirou · Renove para continuar usando',
+                          en: 'Your plan expired · Renew to continue',
+                          es: 'Tu plan venció · Renueva para continuar',
+                          fr: 'Votre abonnement a expiré · Renouvelez pour continuer',
+                        })
+                      : pick({
+                          pt: 'Assinatura necessária para liberar o sistema',
+                          en: 'Active subscription required to unlock the workspace',
+                          es: 'Suscripción activa necesaria para liberar el sistema',
+                          fr: 'Abonnement actif requis pour débloquer le système',
+                        })}
               </h2>
               <p className="mt-2.5 text-sm text-slate-600 leading-relaxed">
                 {company.status === 'suspended'
@@ -640,12 +843,26 @@ export function ClientDashboard({
                       es: 'La suscripción de esta empresa está suspendida. Regulariza tu plan en la pestaña Suscripción.',
                       fr: "L'abonnement de cette entreprise est suspendu. Régularisez votre offre dans l'onglet Abonnement.",
                     })
-                  : pick({
-                      pt: 'Para evitar uso indevido sem contratação, os módulos de Visão Geral, Financeiro, Catálogo, Clientes, Relatórios e Consultor IA só são liberados após confirmação de pagamento do seu plano.',
-                      en: 'Overview, Finance, Catalog, Clients, Reports, and AI Advisor modules unlock automatically right after confirming your subscription payment.',
-                      es: 'Los módulos de Resumen, Finanzas, Catálogo, Clientes, Informes y Consultor IA se liberan automáticamente tras confirmar el pago de tu plan.',
-                      fr: 'Les modules Aperçu, Finances, Catalogue, Clients, Rapports et Conseiller IA sont débloqués dès la confirmation du paiement.',
-                    })}
+                  : isTrialExpired
+                    ? pick({
+                        pt: `O prazo do seu Acesso Teste encerrou em ${formatDateTimeBR(company.trialExpiresAt, lang)}. Escolha um plano na aba Assinatura para liberar imediatamente todos os seus dados e módulos.`,
+                        en: `Your test access ended at ${formatDateTimeBR(company.trialExpiresAt, lang)}. Choose a plan in the Subscription tab to unlock all features immediately.`,
+                        es: `Tu acceso de prueba finalizó el ${formatDateTimeBR(company.trialExpiresAt, lang)}. Elige un plan en Suscripción para desbloquear todos tus módulos.`,
+                        fr: `Votre accès test s'est terminé le ${formatDateTimeBR(company.trialExpiresAt, lang)}. Choisissez une offre dans l'onglet Abonnement.`,
+                      })
+                    : hasExpiredPlanOnly
+                      ? pick({
+                          pt: 'O prazo de validade do seu plano venceu e o acesso foi bloqueado automaticamente. Faça a renovação via Pix ou cartão para desbloquear na hora.',
+                          en: 'Your plan validity period has expired and access was automatically locked. Renew via Pix or card to unlock immediately.',
+                          es: 'La validez de tu plan venció y el acceso se bloqueó automáticamente. Renueva vía Pix o tarjeta para desbloquear al instante.',
+                          fr: 'La durée de validité de votre abonnement est échue et l’accès a été bloqué automatiquement. Renouvelez par Pix ou carte.',
+                        })
+                      : pick({
+                          pt: 'Para evitar uso indevido sem contratação, os módulos de Visão Geral, Financeiro, Catálogo, Clientes, Relatórios e Consultor IA só são liberados após confirmação de pagamento do seu plano.',
+                          en: 'Overview, Finance, Catalog, Clients, Reports, and AI Advisor modules unlock automatically right after confirming your subscription payment.',
+                          es: 'Los módulos de Resumen, Finanzas, Catálogo, Clientes, Informes y Consultor IA se liberan automáticamente tras confirmar el pago de tu plan.',
+                          fr: 'Les modules Aperçu, Finances, Catalogue, Clients, Rapports et Conseiller IA sont débloqués dès la confirmation du paiement.',
+                        })}
               </p>
 
               <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-xl p-4">
@@ -744,8 +961,8 @@ export function ClientDashboard({
                   revenues={revenues}
                   expenses={expenses}
                   transactions={transactions}
-                  activeSubscription={subscriptions[0] || null}
-                  serverAccessVerified={serverAccessVerified || isAdmin}
+                  activeSubscription={primaryBillingSub}
+                  serverAccessVerified={serverAccessVerified || isAdmin || isTrialValid || hasAdminActivatedSub}
                   isOwnerFreeMode={isAdmin}
                   onGoToTab={(t) => {
                     setHasInteractedNav(true);
@@ -795,7 +1012,7 @@ export function ClientDashboard({
                   services={services}
                   clients={clients}
                   savedReports={savedReports}
-                  activeSubscription={subscriptions[0] || null}
+                  activeSubscription={primaryBillingSub}
                 />
               )}
               {activeTab === 'ai' && (
@@ -811,7 +1028,7 @@ export function ClientDashboard({
                   services={services}
                   clients={clients}
                   savedReports={savedReports}
-                  activeSubscription={subscriptions[0] || null}
+                  activeSubscription={primaryBillingSub}
                 />
               )}
               {activeTab === 'settings' && (
@@ -825,7 +1042,7 @@ export function ClientDashboard({
                   subscriptions={subscriptions}
                   payments={payments}
                   notifications={notifications}
-                  onSubscriptionVerified={checkServerAccess}
+                  onSubscriptionVerified={syncCompanyAccess}
                 />
               )}
             </>
@@ -845,7 +1062,7 @@ export function ClientDashboard({
               preselectedCycle={renewCycle ?? preselectedCycle}
               preferredPaymentMode={preferredPaymentMode}
               isOwnerFreeMode={isAdmin}
-              onSubscriptionVerified={checkServerAccess}
+              onSubscriptionVerified={syncCompanyAccess}
             />
           )}
           {accessReady && activeTab === 'notifications' && (
@@ -858,7 +1075,7 @@ export function ClientDashboard({
               subscriptions={subscriptions}
               payments={payments}
               notifications={notifications}
-              onSubscriptionVerified={checkServerAccess}
+              onSubscriptionVerified={syncCompanyAccess}
             />
           )}
           {accessReady && activeTab === 'manual' && <HelpManualPage />}

@@ -8,6 +8,7 @@ import {
   Briefcase,
   Building2,
   CheckCircle2,
+  Clock,
   Copy,
   CreditCard,
   Download,
@@ -15,6 +16,7 @@ import {
   Lock,
   LogOut,
   Mail,
+  Menu,
   MessageCircle,
   Phone,
   Plus,
@@ -26,6 +28,7 @@ import {
   Tag,
   Trash2,
   Users,
+  X,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -59,6 +62,7 @@ import {
   adminSavePlan,
   adminSaveSystemSettings,
   adminSendBillingNotification,
+  adminSetCompanyTrial,
   adminToggleCoupon,
   adminUpdateCompanyStatus,
   adminUpdateSubscriptionStatus,
@@ -80,7 +84,12 @@ import {
   formatBRL,
   formatCompactBRL,
   formatDateBR,
+  formatDateTimeBR,
+  formatTrialRemaining,
   getDaysUntilDate,
+  getSubscriptionDueDateIso,
+  isIsoDateExpired,
+  isSubscriptionActiveAndValid,
   translateSubscriptionStatus,
 } from '../utils/format';
 
@@ -156,6 +165,8 @@ export function AdminDashboard({
   const { firebaseUser, isAdmin, logout, getIdToken } = useAuth();
   const { t: i18n, pick } = useLanguage();
   const [activeTab, setActiveTab] = useState<AdminTabId>('executive');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [securityStatus, setSecurityStatus] = useState<SecurityStatusResponse | null>(null);
   const [loadingSecurity, setLoadingSecurity] = useState(false);
 
@@ -173,6 +184,22 @@ export function AdminDashboard({
   const [billingFeedback, setBillingFeedback] = useState('');
   const [clientSearch, setClientSearch] = useState('');
   const [copiedContactId, setCopiedContactId] = useState('');
+
+  // Cliente Teste modal state
+  const [trialModalCompany, setTrialModalCompany] = useState<{
+    company: Company;
+    clientName: string;
+    clientEmail: string;
+  } | null>(null);
+  const [trialPresetKey, setTrialPresetKey] = useState<
+    '1h' | '1d' | '3d' | '7d' | '15d' | '30d' | 'custom' | 'exact'
+  >('7d');
+  const [trialCustomAmount, setTrialCustomAmount] = useState('7');
+  const [trialCustomUnit, setTrialCustomUnit] = useState<'hours' | 'days'>('days');
+  const [trialExactDatetime, setTrialExactDatetime] = useState('');
+  const [trialNote, setTrialNote] = useState('');
+  const [trialBusy, setTrialBusy] = useState(false);
+  const [trialFeedback, setTrialFeedback] = useState('');
 
   // Plan editor state
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
@@ -203,6 +230,11 @@ export function AdminDashboard({
   const [mpEnv, setMpEnv] = useState<'sandbox' | 'production'>('sandbox');
   const [maintenanceMode, setMaintenanceMode] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState('');
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 30000);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (!isAdmin || !firebaseUser) return;
@@ -279,9 +311,14 @@ export function AdminDashboard({
     const approvedPayments = payments.filter((p) => p.status === 'approved');
     const totalRevenue = approvedPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
 
-    const activeSubs = subscriptions.filter((s) => s.status === 'authorized');
+    const activeSubs = subscriptions.filter((s) => isSubscriptionActiveAndValid(s, nowMs));
     const pendingSubs = subscriptions.filter((s) => s.status === 'pending');
-    const overdueSubs = subscriptions.filter((s) => s.status === 'overdue' || s.status === 'suspended');
+    const overdueSubs = subscriptions.filter(
+      (s) =>
+        s.status === 'overdue' ||
+        s.status === 'suspended' ||
+        (s.status === 'authorized' && !isSubscriptionActiveAndValid(s, nowMs))
+    );
     const cancelledSubs = subscriptions.filter((s) => s.status === 'cancelled');
 
     const mrr = activeSubs.reduce((s, sub) => s + (Number(sub.baseMonthlyPrice) || 0), 0);
@@ -332,7 +369,7 @@ export function AdminDashboard({
 
     subscriptions.forEach((sub) => {
       const { key, cur } = ensureBucket(sub.createdAt?.seconds);
-      if (sub.status === 'authorized') cur.positivas += 1;
+      if (isSubscriptionActiveAndValid(sub, nowMs)) cur.positivas += 1;
       else if (sub.status === 'pending') cur.pendentes += 1;
       else cur.negativas += 1;
       growthMap.set(key, cur);
@@ -359,7 +396,7 @@ export function AdminDashboard({
       growthSeries,
       revenueHealthBars,
     };
-  }, [payments, subscriptions, companies]);
+  }, [payments, subscriptions, companies, nowMs]);
 
   const clientDirectory = useMemo(() => {
     return companies.map((c) => {
@@ -382,7 +419,7 @@ export function AdminDashboard({
         .filter((s) => s.companyId === c.id)
         .sort((a, b) => (b.updatedAt?.seconds || b.createdAt?.seconds || 0) - (a.updatedAt?.seconds || a.createdAt?.seconds || 0));
       const latestSub =
-        companySubs.find((s) => s.status === 'authorized') || companySubs[0] || null;
+        companySubs.find((s) => isSubscriptionActiveAndValid(s, nowMs)) || companySubs[0] || null;
 
       return {
         company: c,
@@ -393,7 +430,7 @@ export function AdminDashboard({
         latestSub,
       };
     });
-  }, [companies, companyMembers, users, subscriptions]);
+  }, [companies, companyMembers, users, subscriptions, nowMs]);
 
   const filteredClients = useMemo(() => {
     const q = clientSearch.trim().toLowerCase();
@@ -409,6 +446,11 @@ export function AdminDashboard({
     );
   }, [clientDirectory, clientSearch]);
 
+  const trialClients = useMemo(
+    () => clientDirectory.filter((item) => item.company.status === 'trial'),
+    [clientDirectory]
+  );
+
   const subscriptionDueRows = useMemo(() => {
     return subscriptions.map((s) => {
       const comp = companies.find((c) => c.id === s.companyId);
@@ -419,19 +461,14 @@ export function AdminDashboard({
           (s.mpPreapprovalId && vs.preapprovalId === s.mpPreapprovalId) ||
           vs.companyId === s.companyId
       );
-      const fallbackBaseSec = s.updatedAt?.seconds || s.createdAt?.seconds;
-      const dueDateIso =
-        serverMatch?.nextBillingDate ||
-        s.nextBillingDate ||
-        (s.status === 'authorized' && fallbackBaseSec
-          ? addMonthsToDateIso(new Date(fallbackBaseSec * 1000).toISOString(), s.billingCycle)
-          : null);
+      const dueDateIso = serverMatch?.nextBillingDate || getSubscriptionDueDateIso(s);
       const daysRemaining = getDaysUntilDate(dueDateIso);
+      const valid = isSubscriptionActiveAndValid(s, nowMs);
       const isOverdue =
         s.status === 'overdue' ||
-        (s.status === 'authorized' && daysRemaining !== null && daysRemaining < 0);
+        (s.status === 'authorized' && (!valid || (daysRemaining !== null && daysRemaining < 0)));
       const isExpiringSoon =
-        s.status === 'authorized' && daysRemaining !== null && daysRemaining >= 0 && daysRemaining <= 7;
+        !isOverdue && valid && daysRemaining !== null && daysRemaining >= 0 && daysRemaining <= 7;
 
       return {
         sub: s,
@@ -445,7 +482,7 @@ export function AdminDashboard({
         isExpiringSoon,
       };
     });
-  }, [subscriptions, companies, clientDirectory, verifiedSubscriptions]);
+  }, [subscriptions, companies, clientDirectory, verifiedSubscriptions, nowMs]);
 
   const expiringAlerts = useMemo(
     () => subscriptionDueRows.filter((row) => row.isOverdue || row.isExpiringSoon),
@@ -573,6 +610,146 @@ export function AdminDashboard({
     });
   };
 
+  const openTrialModal = (item: {
+    company: Company;
+    clientName: string;
+    clientEmail: string;
+  }) => {
+    setTrialModalCompany(item);
+    setTrialPresetKey(item.company.status === 'trial' && item.company.trialExpiresAt ? 'exact' : '7d');
+    setTrialCustomAmount('7');
+    setTrialCustomUnit('days');
+    if (item.company.trialExpiresAt) {
+      const dt = new Date(item.company.trialExpiresAt);
+      if (!Number.isNaN(dt.getTime())) {
+        const local = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000)
+          .toISOString()
+          .slice(0, 16);
+        setTrialExactDatetime(local);
+      } else {
+        setTrialExactDatetime('');
+      }
+    } else {
+      const def = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      setTrialExactDatetime(
+        new Date(def.getTime() - def.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+      );
+    }
+    setTrialNote(item.company.trialNote || '');
+  };
+
+  const computeTrialExpiresIso = (): string | null => {
+    const now = Date.now();
+    if (trialPresetKey === '1h') return new Date(now + 60 * 60 * 1000).toISOString();
+    if (trialPresetKey === '1d') return new Date(now + 24 * 60 * 60 * 1000).toISOString();
+    if (trialPresetKey === '3d') return new Date(now + 3 * 24 * 60 * 60 * 1000).toISOString();
+    if (trialPresetKey === '7d') return new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString();
+    if (trialPresetKey === '15d') return new Date(now + 15 * 24 * 60 * 60 * 1000).toISOString();
+    if (trialPresetKey === '30d') return new Date(now + 30 * 24 * 60 * 60 * 1000).toISOString();
+    if (trialPresetKey === 'custom') {
+      const num = Math.max(1, Number(trialCustomAmount) || 1);
+      const ms = trialCustomUnit === 'hours' ? num * 60 * 60 * 1000 : num * 24 * 60 * 60 * 1000;
+      return new Date(now + ms).toISOString();
+    }
+    if (trialExactDatetime) {
+      const d = new Date(trialExactDatetime);
+      if (!Number.isNaN(d.getTime()) && d.getTime() > now) return d.toISOString();
+    }
+    return null;
+  };
+
+  const handleSaveTrial = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!trialModalCompany) return;
+    const expiresIso = computeTrialExpiresIso();
+    if (!expiresIso) {
+      setTrialFeedback('Escolha um prazo futuro válido para o Cliente Teste.');
+      return;
+    }
+    setTrialBusy(true);
+    try {
+      const comp = trialModalCompany.company;
+      await adminSetCompanyTrial(comp.id, {
+        active: true,
+        expiresAt: expiresIso,
+        note: trialNote,
+      });
+      try {
+        const token = await getIdToken();
+        await fetch('/api/admin/set-company-trial', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            companyId: comp.id,
+            active: true,
+            expiresAt: expiresIso,
+            note: trialNote,
+          }),
+        });
+      } catch {
+        // ignore transient server ledger sync
+      }
+      await createAuditLog({
+        actorUid: firebaseUser.uid,
+        actorEmail: firebaseUser.email || '',
+        companyId: comp.id,
+        action: 'GRANT_CLIENT_TRIAL',
+        targetCollection: 'companies',
+        targetId: comp.id,
+        details: `Cliente Teste liberado para ${comp.name} até ${formatDateTimeBR(expiresIso, 'pt')}${
+          trialNote ? ` · ${trialNote}` : ''
+        }`,
+      });
+      setTrialFeedback(
+        `Acesso gratuito de Cliente Teste liberado para ${comp.name} até ${formatDateTimeBR(
+          expiresIso,
+          'pt'
+        )}.`
+      );
+      setTrialModalCompany(null);
+    } finally {
+      setTrialBusy(false);
+    }
+  };
+
+  const handleRevokeTrial = async (comp: Company) => {
+    setTrialBusy(true);
+    try {
+      await adminSetCompanyTrial(comp.id, { active: false });
+      try {
+        const token = await getIdToken();
+        await fetch('/api/admin/set-company-trial', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            companyId: comp.id,
+            active: false,
+          }),
+        });
+      } catch {
+        // ignore transient server ledger sync
+      }
+      await createAuditLog({
+        actorUid: firebaseUser.uid,
+        actorEmail: firebaseUser.email || '',
+        companyId: comp.id,
+        action: 'REVOKE_CLIENT_TRIAL',
+        targetCollection: 'companies',
+        targetId: comp.id,
+        details: `Modo Cliente Teste encerrado para ${comp.name}`,
+      });
+      setTrialFeedback(`Modo Cliente Teste encerrado para ${comp.name}.`);
+    } finally {
+      setTrialBusy(false);
+    }
+  };
+
   const handleSaveSystemSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     await adminSaveSystemSettings({
@@ -634,9 +811,20 @@ export function AdminDashboard({
 
   return (
     <div className="min-h-screen bg-[#F8FAFC]/82 backdrop-blur-[2px] flex">
-      <aside className="w-64 bg-[#0F172A] text-white flex flex-col shrink-0">
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-64 bg-[#0F172A] text-white flex flex-col shrink-0 transition-transform lg:translate-x-0 lg:static ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
         <div className="h-16 px-5 border-b border-slate-800 flex items-center justify-between">
           <JorqLogo dark />
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(false)}
+            className="lg:hidden p-1.5 text-slate-400 hover:text-white cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
         <div className="px-5 py-4 border-b border-slate-800">
           <div className="flex items-center gap-2 text-xs font-semibold text-blue-300">
@@ -645,7 +833,7 @@ export function AdminDashboard({
           </div>
           <p className="mt-1 text-xs text-slate-400 truncate">{firebaseUser.email}</p>
         </div>
-        <nav className="flex-1 p-3 space-y-1">
+        <nav className="flex-1 overflow-y-auto p-3 space-y-1">
           {navTabs.map((t) => {
             const Icon = t.icon;
             const active = activeTab === t.id;
@@ -653,7 +841,10 @@ export function AdminDashboard({
               <button
                 key={t.id}
                 type="button"
-                onClick={() => setActiveTab(t.id)}
+                onClick={() => {
+                  setActiveTab(t.id);
+                  setSidebarOpen(false);
+                }}
                 className={`w-full flex items-center justify-between gap-2 px-3 py-2.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
                   active ? 'bg-[#1E40AF] text-white' : 'text-slate-300 hover:bg-slate-800'
                 }`}
@@ -675,7 +866,10 @@ export function AdminDashboard({
           {onEnterClientMode && (
             <button
               type="button"
-              onClick={onEnterClientMode}
+              onClick={() => {
+                setSidebarOpen(false);
+                onEnterClientMode();
+              }}
               className="w-full flex items-center gap-2 px-3 py-2.5 text-xs font-semibold text-emerald-300 bg-emerald-950/50 border border-emerald-800/70 hover:bg-emerald-900/60 rounded-lg cursor-pointer"
             >
               <Briefcase className="w-4 h-4 shrink-0" />
@@ -685,7 +879,10 @@ export function AdminDashboard({
           {onBackToClient && (
             <button
               type="button"
-              onClick={onBackToClient}
+              onClick={() => {
+                setSidebarOpen(false);
+                onBackToClient();
+              }}
               className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg cursor-pointer"
             >
               <ArrowLeft className="w-4 h-4" />
@@ -704,14 +901,23 @@ export function AdminDashboard({
       </aside>
 
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 bg-white border-b border-slate-200 px-6 lg:px-8 flex items-center justify-between gap-4">
-          <h1 className="font-display text-lg font-bold text-[#0F172A] truncate">
-            {navTabs.find((t) => t.id === activeTab)?.label}
-          </h1>
-          <div className="flex items-center gap-3 shrink-0">
+        <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-3 sticky top-0 z-30">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              className="lg:hidden p-2 -ml-1 text-slate-600 hover:bg-slate-100 rounded-lg shrink-0 cursor-pointer"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <h1 className="font-display text-base sm:text-lg font-bold text-[#0F172A] truncate">
+              {navTabs.find((t) => t.id === activeTab)?.label}
+            </h1>
+          </div>
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <LanguageSelector compact />
             <PWAInstallButton compact />
-            <div className="hidden sm:flex items-center gap-3 text-xs text-slate-500 font-mono tabular-nums">
+            <div className="hidden md:flex items-center gap-3 text-xs text-slate-500 font-mono tabular-nums">
               <span>
                 {companies.length}{' '}
                 {pick({ pt: 'empresas', en: 'companies', es: 'empresas', fr: 'entreprises' })}
@@ -726,16 +932,17 @@ export function AdminDashboard({
               <button
                 type="button"
                 onClick={onEnterClientMode}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Briefcase className="w-3.5 h-3.5" />
-                <span>{i18n.adminNav.clientModeFree}</span>
+                <span className="hidden sm:inline">{i18n.adminNav.clientModeFree}</span>
+                <span className="sm:hidden">Modo Cliente</span>
               </button>
             )}
           </div>
         </header>
 
-        <main className="flex-1 p-8 max-w-7xl w-full mx-auto space-y-8">
+        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-8">
           {expiringAlerts.length > 0 && (
             <div className="bg-amber-50 border border-amber-300 rounded-xl p-5 space-y-3">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1083,6 +1290,90 @@ export function AdminDashboard({
 
           {activeTab === 'clients' && (
             <div className="space-y-6">
+              {trialFeedback && (
+                <div className="p-4 bg-indigo-50 border border-indigo-200 rounded-xl flex items-center justify-between gap-3 text-xs text-indigo-900 font-medium">
+                  <span>{trialFeedback}</span>
+                  <button
+                    type="button"
+                    onClick={() => setTrialFeedback('')}
+                    className="text-indigo-700 hover:text-indigo-950 font-semibold cursor-pointer"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              )}
+
+              {trialClients.length > 0 && (
+                <div className="bg-white border border-indigo-200 rounded-xl p-5 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-indigo-700" />
+                      <h2 className="font-display text-sm font-bold text-[#0F172A]">
+                        Clientes Teste Liberados ({trialClients.length})
+                      </h2>
+                    </div>
+                    <span className="text-[11px] text-slate-500">
+                      O acesso é bloqueado automaticamente ao fim do prazo.
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {trialClients.map((item) => {
+                      const c = item.company;
+                      const expired = isIsoDateExpired(c.trialExpiresAt, nowMs);
+                      return (
+                        <div
+                          key={c.id}
+                          className={`p-3.5 rounded-lg border flex flex-col justify-between gap-2.5 ${
+                            expired ? 'bg-red-50/40 border-red-200' : 'bg-indigo-50/40 border-indigo-200'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-xs font-bold text-slate-900 truncate">{c.name}</p>
+                              <span
+                                className={`text-[11px] font-bold font-mono shrink-0 ${
+                                  expired ? 'text-[#DC2626]' : 'text-indigo-700'
+                                }`}
+                              >
+                                {expired ? 'Expirado' : formatTrialRemaining(c.trialExpiresAt, nowMs)}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 truncate mt-0.5">
+                              {item.clientName} {item.clientEmail ? `· ${item.clientEmail}` : ''}
+                            </p>
+                            <p className="text-[11px] font-mono text-slate-600 mt-1">
+                              Até: {formatDateTimeBR(c.trialExpiresAt, 'pt')}
+                            </p>
+                            {c.trialNote && (
+                              <p className="text-[11px] text-slate-500 mt-0.5 italic truncate">
+                                {c.trialNote}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => openTrialModal(item)}
+                              className="px-2.5 py-1 text-[11px] font-semibold text-indigo-800 bg-white border border-indigo-200 rounded hover:bg-indigo-50 cursor-pointer"
+                            >
+                              Alterar Prazo
+                            </button>
+                            <button
+                              type="button"
+                              disabled={trialBusy}
+                              onClick={() => handleRevokeTrial(c)}
+                              className="px-2.5 py-1 text-[11px] font-semibold text-[#DC2626] bg-white border border-red-200 rounded hover:bg-red-50 cursor-pointer"
+                            >
+                              Encerrar Teste
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
                 <div className="px-6 py-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
                   <div>
@@ -1090,7 +1381,7 @@ export function AdminDashboard({
                       Lista de Clientes — Nome e Contato ({filteredClients.length})
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Todos os clientes cadastrados com responsável, empresa, e-mail, telefone/WhatsApp e controle de acesso.
+                      Todos os clientes cadastrados com responsável, empresa, e-mail, telefone/WhatsApp, plano e opção Cliente Teste.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1110,15 +1401,30 @@ export function AdminDashboard({
                         exportToCSV(
                           `clientes-jorq-${new Date().toISOString().slice(0, 10)}.csv`,
                           ['Nome do Cliente', 'Empresa', 'E-mail', 'Telefone', 'Segmento', 'Plano', 'Status'],
-                          filteredClients.map((item) => [
-                            item.clientName,
-                            item.company.name,
-                            item.clientEmail || '—',
-                            item.phone || '—',
-                            item.company.sector || '—',
-                            item.latestSub ? `${item.latestSub.planName} (${translateSubscriptionStatus(item.latestSub.status, 'pt').label})` : 'Sem assinatura',
-                            item.company.status === 'suspended' ? 'Suspensa' : 'Ativa',
-                          ])
+                          filteredClients.map((item) => {
+                            const subExpired =
+                              item.latestSub?.status === 'authorized' &&
+                              !isSubscriptionActiveAndValid(item.latestSub, nowMs);
+                            const companyStatusLabel =
+                              item.company.status === 'suspended'
+                                ? 'Suspensa'
+                                : item.company.status === 'trial'
+                                  ? isIsoDateExpired(item.company.trialExpiresAt, nowMs)
+                                    ? 'Teste Expirado'
+                                    : `Cliente Teste até ${formatDateTimeBR(item.company.trialExpiresAt, 'pt')}`
+                                  : 'Ativa';
+                            return [
+                              item.clientName,
+                              item.company.name,
+                              item.clientEmail || '—',
+                              item.phone || '—',
+                              item.company.sector || '—',
+                              item.latestSub
+                                ? `${item.latestSub.planName} (${translateSubscriptionStatus(subExpired ? 'overdue' : item.latestSub.status, 'pt').label})`
+                                : 'Sem assinatura',
+                              companyStatusLabel,
+                            ];
+                          })
                         )
                       }
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
@@ -1149,6 +1455,16 @@ export function AdminDashboard({
                       ) : (
                         filteredClients.map((item) => {
                           const c = item.company;
+                          const isTrial = c.status === 'trial';
+                          const trialExpired = isTrial && isIsoDateExpired(c.trialExpiresAt, nowMs);
+                          const subValid = item.latestSub
+                            ? isSubscriptionActiveAndValid(item.latestSub, nowMs)
+                            : false;
+                          const subStatusKey = item.latestSub
+                            ? item.latestSub.status === 'authorized' && !subValid
+                              ? 'overdue'
+                              : item.latestSub.status
+                            : '';
                           return (
                             <tr key={c.id} className="hover:bg-slate-50/60">
                               <td className="py-3.5 px-5 align-top">
@@ -1223,39 +1539,74 @@ export function AdminDashboard({
                                     <p className="font-semibold text-slate-800">{item.latestSub.planName}</p>
                                     <p
                                       className={`mt-0.5 font-semibold ${
-                                        item.latestSub.status === 'authorized'
+                                        subStatusKey === 'authorized'
                                           ? 'text-[#16A34A]'
-                                          : item.latestSub.status === 'pending'
+                                          : subStatusKey === 'pending'
                                             ? 'text-amber-700'
                                             : 'text-[#DC2626]'
                                       }`}
                                     >
-                                      {translateSubscriptionStatus(item.latestSub.status, 'pt').label}
+                                      {translateSubscriptionStatus(subStatusKey, 'pt').label}
+                                      {subStatusKey === 'overdue' && item.latestSub.nextBillingDate
+                                        ? ` (${formatDateBR(item.latestSub.nextBillingDate, 'pt')})`
+                                        : ''}
                                     </p>
                                   </div>
                                 ) : (
                                   <span className="text-slate-400">Sem assinatura</span>
                                 )}
-                                <p
-                                  className={`mt-1 font-semibold ${
-                                    c.status === 'suspended' ? 'text-[#DC2626]' : 'text-[#16A34A]'
-                                  }`}
-                                >
-                                  Empresa {c.status === 'suspended' ? 'Suspensa' : 'Ativa'}
-                                </p>
+                                {isTrial ? (
+                                  <p
+                                    className={`mt-1 font-semibold ${
+                                      trialExpired ? 'text-[#DC2626]' : 'text-indigo-700'
+                                    }`}
+                                  >
+                                    {trialExpired
+                                      ? 'Cliente Teste (Expirado)'
+                                      : `Cliente Teste (${formatTrialRemaining(c.trialExpiresAt, nowMs)})`}
+                                  </p>
+                                ) : (
+                                  <p
+                                    className={`mt-1 font-semibold ${
+                                      c.status === 'suspended' ? 'text-[#DC2626]' : 'text-[#16A34A]'
+                                    }`}
+                                  >
+                                    Empresa {c.status === 'suspended' ? 'Suspensa' : 'Ativa'}
+                                  </p>
+                                )}
                               </td>
                               <td className="py-3.5 px-5 align-top text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleCompany(c)}
-                                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg border cursor-pointer ${
-                                    c.status === 'suspended'
-                                      ? 'border-emerald-300 text-emerald-700 hover:bg-emerald-50'
-                                      : 'border-red-200 text-red-700 hover:bg-red-50'
-                                  }`}
-                                >
-                                  {c.status === 'suspended' ? 'Reativar Acesso' : 'Suspender Acesso'}
-                                </button>
+                                <div className="inline-flex flex-wrap justify-end gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => openTrialModal(item)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-indigo-200 text-indigo-700 bg-indigo-50/50 hover:bg-indigo-100 cursor-pointer"
+                                  >
+                                    <Clock className="w-3.5 h-3.5" />
+                                    <span>{isTrial ? 'Editar Teste' : 'Cliente Teste'}</span>
+                                  </button>
+                                  {isTrial && (
+                                    <button
+                                      type="button"
+                                      disabled={trialBusy}
+                                      onClick={() => handleRevokeTrial(c)}
+                                      className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-50 cursor-pointer"
+                                    >
+                                      Encerrar Teste
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleCompany(c)}
+                                    className={`px-2.5 py-1.5 text-xs font-semibold rounded-lg border cursor-pointer ${
+                                      c.status === 'suspended'
+                                        ? 'border-emerald-300 text-emerald-700 hover:bg-emerald-50'
+                                        : 'border-red-200 text-red-700 hover:bg-red-50'
+                                    }`}
+                                  >
+                                    {c.status === 'suspended' ? 'Reativar' : 'Suspender'}
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           );
@@ -1573,7 +1924,7 @@ export function AdminDashboard({
             <div className="space-y-6">
               <form
                 onSubmit={handleCreateCoupon}
-                className="bg-white border border-slate-200 rounded-xl p-6 grid grid-cols-1 sm:grid-cols-4 gap-4 items-end"
+                className="bg-white border border-slate-200 rounded-xl p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 items-end"
               >
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -1614,6 +1965,17 @@ export function AdminDashboard({
                     className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg font-mono"
                   />
                 </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Validade (opcional)
+                  </label>
+                  <input
+                    type="date"
+                    value={couponExpires}
+                    onChange={(e) => setCouponExpires(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg font-mono"
+                  />
+                </div>
                 <button
                   type="submit"
                   className="inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] cursor-pointer"
@@ -1630,40 +1992,54 @@ export function AdminDashboard({
                       <th className="py-3 px-5">Código</th>
                       <th className="py-3 px-5">Desconto</th>
                       <th className="py-3 px-5">Usos</th>
+                      <th className="py-3 px-5">Validade</th>
                       <th className="py-3 px-5">Status</th>
                       <th className="py-3 px-5 text-right">Ações</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-sm">
-                    {coupons.map((c) => (
-                      <tr key={c.id}>
-                        <td className="py-3 px-5 font-mono font-bold text-slate-900">{c.code}</td>
-                        <td className="py-3 px-5 font-mono tabular-nums">{c.discountPercent}%</td>
-                        <td className="py-3 px-5 font-mono tabular-nums">
-                          {c.usedCount} / {c.maxUses}
-                        </td>
-                        <td className="py-3 px-5 text-xs">
-                          <button
-                            type="button"
-                            onClick={() => adminToggleCoupon(c.id, !c.active)}
-                            className={`font-semibold cursor-pointer ${
-                              c.active ? 'text-[#16A34A]' : 'text-slate-500'
-                            }`}
-                          >
-                            {c.active ? 'Ativo' : 'Inativo'}
-                          </button>
-                        </td>
-                        <td className="py-3 px-5 text-right">
-                          <button
-                            type="button"
-                            onClick={() => adminDeleteCoupon(c.id)}
-                            className="p-1.5 text-slate-400 hover:text-[#DC2626] cursor-pointer"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {coupons.map((c) => {
+                      const exhausted = Number(c.usedCount || 0) >= Number(c.maxUses || 0);
+                      return (
+                        <tr key={c.id}>
+                          <td className="py-3 px-5 font-mono font-bold text-slate-900">{c.code}</td>
+                          <td className="py-3 px-5 font-mono tabular-nums">{c.discountPercent}%</td>
+                          <td className="py-3 px-5 font-mono tabular-nums">
+                            <span>
+                              {c.usedCount} / {c.maxUses}
+                            </span>
+                            {exhausted && (
+                              <span className="ml-2 text-[11px] font-semibold text-[#DC2626]">
+                                Esgotado
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-5 font-mono text-xs text-slate-600">
+                            {c.expiresAt ? formatDateBR(c.expiresAt, 'pt') : 'Sem vencimento'}
+                          </td>
+                          <td className="py-3 px-5 text-xs">
+                            <button
+                              type="button"
+                              onClick={() => adminToggleCoupon(c.id, !c.active)}
+                              className={`font-semibold cursor-pointer ${
+                                c.active && !exhausted ? 'text-[#16A34A]' : 'text-slate-500'
+                              }`}
+                            >
+                              {!c.active ? 'Inativo' : exhausted ? 'Ativo (Esgotado)' : 'Ativo'}
+                            </button>
+                          </td>
+                          <td className="py-3 px-5 text-right">
+                            <button
+                              type="button"
+                              onClick={() => adminDeleteCoupon(c.id)}
+                              className="p-1.5 text-slate-400 hover:text-[#DC2626] cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1741,7 +2117,12 @@ export function AdminDashboard({
                               )}
                             </td>
                             <td className="py-3 px-5 text-xs font-semibold">
-                              {translateSubscriptionStatus(s.status).label}
+                              <span className={row.isOverdue ? 'text-[#DC2626]' : ''}>
+                                {translateSubscriptionStatus(
+                                  row.isOverdue && s.status === 'authorized' ? 'overdue' : s.status,
+                                  'pt'
+                                ).label}
+                              </span>
                             </td>
                             <td className="py-3 px-5 text-right space-x-2 whitespace-nowrap">
                               {(row.isExpiringSoon || row.isOverdue) && (
@@ -2218,6 +2599,157 @@ export function AdminDashboard({
           )}
         </main>
       </div>
+
+      {trialModalCompany && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700">
+                  <Clock className="w-4 h-4" />
+                  <span>Liberar Cliente Teste (Gratuito por Tempo Determinado)</span>
+                </div>
+                <h2 className="mt-1 font-display text-lg font-bold text-[#0F172A]">
+                  {trialModalCompany.company.name}
+                </h2>
+                <p className="text-xs text-slate-500">
+                  {trialModalCompany.clientName}
+                  {trialModalCompany.clientEmail ? ` · ${trialModalCompany.clientEmail}` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTrialModalCompany(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveTrial} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-2">
+                  Escolha o Prazo do Teste Gratuito
+                </label>
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                  {(
+                    [
+                      { id: '1h', label: '1 hora' },
+                      { id: '1d', label: '1 dia' },
+                      { id: '3d', label: '3 dias' },
+                      { id: '7d', label: '7 dias' },
+                      { id: '15d', label: '15 dias' },
+                      { id: '30d', label: '30 dias' },
+                      { id: 'custom', label: 'Personalizado' },
+                      { id: 'exact', label: 'Data/Hora' },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setTrialPresetKey(opt.id)}
+                      className={`px-2.5 py-2 text-xs font-semibold rounded-lg border cursor-pointer ${
+                        trialPresetKey === opt.id
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {trialPresetKey === 'custom' && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Quantidade
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="3650"
+                      required
+                      value={trialCustomAmount}
+                      onChange={(e) => setTrialCustomAmount(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Unidade
+                    </label>
+                    <select
+                      value={trialCustomUnit}
+                      onChange={(e) => setTrialCustomUnit(e.target.value as 'hours' | 'days')}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+                    >
+                      <option value="hours">Hora(s)</option>
+                      <option value="days">Dia(s)</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {trialPresetKey === 'exact' && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Data e Hora de Expiração
+                  </label>
+                  <input
+                    type="datetime-local"
+                    required
+                    value={trialExactDatetime}
+                    onChange={(e) => setTrialExactDatetime(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg font-mono"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Observação interna (opcional)
+                </label>
+                <input
+                  type="text"
+                  maxLength={80}
+                  value={trialNote}
+                  onChange={(e) => setTrialNote(e.target.value)}
+                  placeholder="Ex.: Demonstração comercial 7 dias"
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                />
+              </div>
+
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600">
+                {(() => {
+                  const previewIso = computeTrialExpiresIso();
+                  return previewIso
+                    ? `O acesso completo será liberado gratuitamente até ${formatDateTimeBR(previewIso, 'pt')} e bloqueado automaticamente depois.`
+                    : 'Informe uma data e hora futura válida para visualizar o vencimento.';
+                })()}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setTrialModalCompany(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={trialBusy}
+                  className="px-5 py-2 text-xs font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50 cursor-pointer"
+                >
+                  {trialBusy ? 'Salvando...' : 'Liberar Acesso Teste'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -305,6 +305,12 @@ export function AuthPage({ onSuccess }: { onSuccess?: () => void }) {
               ? a.submitRegister
               : a.submitReset}
           </button>
+
+          {mode === 'login' && (
+            <p className="text-[11px] text-slate-500 text-center leading-relaxed">
+              O proprietário utiliza o mesmo e-mail de administrador para acessar tanto o Painel Administrativo quanto o Modo Cliente gratuito.
+            </p>
+          )}
         </form>
 
         <div className="my-5 flex items-center gap-3">

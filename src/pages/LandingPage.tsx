@@ -7,9 +7,17 @@ interface LandingPageProps {
   onNavigate: (route: PublicRoute) => void;
   isAuthenticated: boolean;
   onEnterApp: () => void;
+  isAdmin?: boolean;
+  onEnterClientMode?: () => void;
 }
 
-export function LandingPage({ onNavigate, isAuthenticated, onEnterApp }: LandingPageProps) {
+export function LandingPage({
+  onNavigate,
+  isAuthenticated,
+  onEnterApp,
+  isAdmin = false,
+  onEnterClientMode,
+}: LandingPageProps) {
   const { t } = useLanguage();
   const l = t.landing;
 
@@ -39,6 +47,15 @@ export function LandingPage({ onNavigate, isAuthenticated, onEnterApp }: Landing
                   <span>{isAuthenticated ? l.ctaPrimaryAuth : l.ctaPrimaryGuest}</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
+                {isAuthenticated && isAdmin && onEnterClientMode && (
+                  <button
+                    type="button"
+                    onClick={onEnterClientMode}
+                    className="px-5 py-3 text-sm font-semibold text-emerald-100 bg-emerald-600/85 border border-emerald-400/50 rounded-lg hover:bg-emerald-600 transition-colors cursor-pointer"
+                  >
+                    {t.adminNav.clientModeFree}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onNavigate('plans')}
@@ -217,6 +234,15 @@ export function LandingPage({ onNavigate, isAuthenticated, onEnterApp }: Landing
             >
               {isAuthenticated ? l.bottomPrimaryAuth : l.bottomPrimaryGuest}
             </button>
+            {isAuthenticated && isAdmin && onEnterClientMode && (
+              <button
+                type="button"
+                onClick={onEnterClientMode}
+                className="px-6 py-3 text-sm font-semibold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors cursor-pointer"
+              >
+                {t.adminNav.clientModeFree}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => onNavigate('plans')}
