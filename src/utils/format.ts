@@ -189,7 +189,7 @@ export function calculatePlanPrice(
   const grossTotal = Number((plan.monthlyPrice * months).toFixed(2));
   const afterCycleTotal = Number((grossTotal * (1 - cycleDiscountPercent / 100)).toFixed(2));
   const couponFactor = 1 - Math.max(0, Math.min(90, couponDiscountPercent)) / 100;
-  const finalTotal = Math.max(1, Number((afterCycleTotal * couponFactor).toFixed(2)));
+  const finalTotal = Math.max(0.01, Number((afterCycleTotal * couponFactor).toFixed(2)));
   const monthlyEquivalent = Number((finalTotal / months).toFixed(2));
 
   return {
