@@ -15,8 +15,17 @@ import {
   ReferenceLine,
   LabelList,
 } from 'recharts';
-import { ArrowDownRight, ArrowUpRight, AlertTriangle, CheckCircle2, HelpCircle } from 'lucide-react';
-import { formatBRL, formatCompactBRL, formatDateBR, translateSubscriptionStatus } from '../../utils/format';
+import { ArrowDownRight, ArrowUpRight, AlertTriangle, CheckCircle2, Clock, HelpCircle } from 'lucide-react';
+import {
+  formatBRL,
+  formatCompactBRL,
+  formatDateBR,
+  formatDateTimeBR,
+  formatTrialRemaining,
+  isIsoDateExpired,
+  isSubscriptionActiveAndValid,
+  translateSubscriptionStatus,
+} from '../../utils/format';
 import { useLanguage } from '../../contexts/LanguageContext';
 import {
   SEMANTIC_COLORS,
@@ -174,8 +183,21 @@ export function OverviewTab({
       ? pick({ pt: 'Normal · Ritmo regular no mês', en: 'Normal · Steady monthly pace', es: 'Normal · Ritmo regular en el mes', fr: 'Normal · Rythme mensuel régulier' })
       : pick({ pt: 'Atenção · Abaixo de 50% da meta', en: 'Attention · Below 50% of goal', es: 'Atención · Por debajo del 50% de la meta', fr: 'Attention · Sous les 50% de l’objectif' });
 
-  const subStatus = activeSubscription
-    ? translateSubscriptionStatus(serverAccessVerified ? 'authorized' : activeSubscription.status, lang)
+  const isTrialValid =
+    !isOwnerFreeMode &&
+    company.status === 'trial' &&
+    Boolean(company.trialExpiresAt) &&
+    !isIsoDateExpired(company.trialExpiresAt);
+  const effectiveSubValid = activeSubscription
+    ? isSubscriptionActiveAndValid(activeSubscription)
+    : false;
+  const effectiveSubStatus = activeSubscription
+    ? activeSubscription.status === 'authorized' && !effectiveSubValid
+      ? 'overdue'
+      : activeSubscription.status
+    : null;
+  const subStatus = effectiveSubStatus
+    ? translateSubscriptionStatus(effectiveSubStatus, lang)
     : null;
 
   return (
@@ -204,6 +226,37 @@ export function OverviewTab({
               </p>
             </div>
           </div>
+        </div>
+      ) : isTrialValid ? (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <Clock className="w-5 h-5 text-indigo-700 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-indigo-950">
+                {pick({
+                  pt: `Modo Cliente Teste · Tempo restante: ${formatTrialRemaining(company.trialExpiresAt)}`,
+                  en: `Test Client Mode · Remaining: ${formatTrialRemaining(company.trialExpiresAt)}`,
+                  es: `Modo Cliente de Prueba · Tiempo restante: ${formatTrialRemaining(company.trialExpiresAt)}`,
+                  fr: `Mode Client Test · Temps restant : ${formatTrialRemaining(company.trialExpiresAt)}`,
+                })}
+              </p>
+              <p className="mt-0.5 text-xs text-indigo-800">
+                {pick({
+                  pt: `Acesso gratuito de teste válido até ${formatDateTimeBR(company.trialExpiresAt, lang)}.`,
+                  en: `Free test access valid until ${formatDateTimeBR(company.trialExpiresAt, lang)}.`,
+                  es: `Acceso de prueba gratuito válido hasta ${formatDateTimeBR(company.trialExpiresAt, lang)}.`,
+                  fr: `Accès test gratuit valable jusqu'au ${formatDateTimeBR(company.trialExpiresAt, lang)}.`,
+                })}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onGoToTab('subscription')}
+            className="px-4 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            {pick({ pt: 'Assinar Plano', en: 'Choose Plan', es: 'Elegir Plan', fr: 'Choisir une Offre' })}
+          </button>
         </div>
       ) : company.status === 'suspended' ? (
         <div className="bg-red-50 border border-red-200 rounded-xl p-5 flex items-start justify-between gap-4">
@@ -239,7 +292,7 @@ export function OverviewTab({
       ) : (
         <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-start gap-3">
-            {serverAccessVerified || activeSubscription?.status === 'authorized' ? (
+            {effectiveSubValid || (serverAccessVerified && effectiveSubStatus !== 'overdue') ? (
               <CheckCircle2 className="w-5 h-5 text-[#16A34A] shrink-0 mt-0.5" />
             ) : (
               <HelpCircle className="w-5 h-5 text-[#1E40AF] shrink-0 mt-0.5" />

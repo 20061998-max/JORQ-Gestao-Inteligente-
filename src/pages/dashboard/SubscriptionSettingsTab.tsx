@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Bell,
   CheckCircle2,
+  Clock,
   Copy,
   CreditCard,
   ExternalLink,
@@ -18,7 +19,10 @@ import {
   createPendingSubscriptionRecord,
   markNotificationRead,
   markSubscriptionCancelledClient,
+  markSubscriptionOverdueClient,
+  redeemCouponForSubscriptionClient,
   saveCompanyGoal,
+  syncConfirmedSubscriptionClient,
   updateCompanySettings,
   uploadCompanyLogo,
   validateCouponCode,
@@ -32,7 +36,10 @@ import {
   calculatePlanPrice,
   formatBRL,
   formatDateBR,
+  formatDateTimeBR,
+  formatTrialRemaining,
   getBillingCycles,
+  isIsoDateExpired,
   safeExternalUrl,
   translateSubscriptionStatus,
 } from '../../utils/format';
@@ -92,6 +99,9 @@ export function SubscriptionSettingsTab({
   const [subError, setSubError] = useState('');
   const [pixCheckout, setPixCheckout] = useState<{
     subscriptionId: string;
+    paymentDocId?: string;
+    billingCycle: BillingCycle;
+    couponCode?: string;
     paymentId: string;
     preapprovalId: string;
     qrCode: string;
@@ -103,6 +113,9 @@ export function SubscriptionSettingsTab({
   } | null>(null);
   const [recurringCheckout, setRecurringCheckout] = useState<{
     subscriptionId: string;
+    paymentDocId?: string;
+    billingCycle: BillingCycle;
+    couponCode?: string;
     preapprovalId: string;
     initPoint: string;
     totalAmount: number;
@@ -160,6 +173,34 @@ export function SubscriptionSettingsTab({
       .catch(() => setMpStatusInfo({ configured: false, environment: 'sandbox' }));
   }, []);
 
+  const confirmAndSyncSubscription = useCallback(
+    async (opts: {
+      subscriptionId: string;
+      mpPreapprovalId?: string;
+      mpStatus: string;
+      nextBillingDate?: string | null;
+      paymentDocId?: string;
+      paidAt?: string;
+      couponCode?: string;
+      couponRedeemed?: boolean;
+    }) => {
+      await syncConfirmedSubscriptionClient({
+        subscriptionId: opts.subscriptionId,
+        companyId: company.id,
+        userId,
+        mpPreapprovalId: opts.mpPreapprovalId,
+        mpStatus: opts.mpStatus,
+        nextBillingDate: opts.nextBillingDate,
+        paymentDocId: opts.paymentDocId,
+        paidAt: opts.paidAt,
+      });
+      if (opts.couponCode && !opts.couponRedeemed) {
+        await redeemCouponForSubscriptionClient(opts.subscriptionId, opts.couponCode);
+      }
+    },
+    [company.id, userId]
+  );
+
   // Poll Mercado Pago every 5s while waiting for Pix QR Code payment confirmation
   useEffect(() => {
     if (!pixCheckout || pixCheckout.approved) return;
@@ -177,11 +218,23 @@ export function SubscriptionSettingsTab({
             preapprovalId: pixCheckout.preapprovalId,
             subscriptionId: pixCheckout.subscriptionId,
             companyId: company.id,
+            billingCycle: pixCheckout.billingCycle,
           }),
         });
         if (!res.ok) return;
         const data = await res.json();
-        if (data.status === 'authorized') {
+        if (data.status === 'authorized' && !data.expired) {
+          const matchedSub = subscriptions.find((s) => s.id === pixCheckout.subscriptionId);
+          await confirmAndSyncSubscription({
+            subscriptionId: pixCheckout.subscriptionId,
+            mpPreapprovalId: pixCheckout.preapprovalId,
+            mpStatus: String(data.mpStatus || 'approved'),
+            nextBillingDate: data.nextBillingDate,
+            paymentDocId: pixCheckout.paymentDocId,
+            paidAt: data.paidAt,
+            couponCode: pixCheckout.couponCode || matchedSub?.couponCode,
+            couponRedeemed: matchedSub?.couponRedeemed,
+          });
           setPixCheckout((prev) => (prev ? { ...prev, approved: true } : prev));
           setSubMessage(
             pick({
@@ -198,7 +251,7 @@ export function SubscriptionSettingsTab({
       }
     }, 5000);
     return () => window.clearInterval(interval);
-  }, [pixCheckout, company.id, getIdToken, onSubscriptionVerified, pick]);
+  }, [pixCheckout, company.id, getIdToken, onSubscriptionVerified, pick, subscriptions, confirmAndSyncSubscription]);
 
   const currentPlan = plans.find((p) => p.id === selectedPlanId) || plans[0];
   const latestSubscription = subscriptions[0] || null;
@@ -338,8 +391,9 @@ export function SubscriptionSettingsTab({
           data.mpStatus || 'pending'
         );
 
+        let createdPaymentDocId: string | undefined;
         try {
-          await createPendingPaymentRecord({
+          createdPaymentDocId = await createPendingPaymentRecord({
             companyId: company.id,
             userId,
             subscriptionId: subId,
@@ -353,6 +407,9 @@ export function SubscriptionSettingsTab({
 
         setPixCheckout({
           subscriptionId: subId,
+          paymentDocId: createdPaymentDocId,
+          billingCycle: cycle,
+          couponCode: resolvedCoupon?.code,
           paymentId: String(data.paymentId || ''),
           preapprovalId: String(data.preapprovalId || ''),
           qrCode: String(data.qrCode || ''),
@@ -372,6 +429,15 @@ export function SubscriptionSettingsTab({
           })
         );
         if (data.status === 'authorized') {
+          await confirmAndSyncSubscription({
+            subscriptionId: subId,
+            mpPreapprovalId: String(data.preapprovalId || ''),
+            mpStatus: String(data.mpStatus || 'approved'),
+            nextBillingDate: data.nextBillingDate,
+            paymentDocId: createdPaymentDocId,
+            paidAt: data.paidAt,
+            couponCode: resolvedCoupon?.code,
+          });
           onSubscriptionVerified();
         }
         window.setTimeout(() => {
@@ -425,8 +491,9 @@ export function SubscriptionSettingsTab({
         data.mpStatus || 'pending'
       );
 
+      let createdPaymentDocId: string | undefined;
       try {
-        await createPendingPaymentRecord({
+        createdPaymentDocId = await createPendingPaymentRecord({
           companyId: company.id,
           userId,
           subscriptionId: subId,
@@ -440,6 +507,9 @@ export function SubscriptionSettingsTab({
 
       setRecurringCheckout({
         subscriptionId: subId,
+        paymentDocId: createdPaymentDocId,
+        billingCycle: cycle,
+        couponCode: resolvedCoupon?.code,
         preapprovalId: String(data.preapprovalId || ''),
         initPoint: String(data.initPoint || ''),
         totalAmount: Number(data.totalAmount ?? calc.finalTotal),
@@ -483,7 +553,14 @@ export function SubscriptionSettingsTab({
     }
   };
 
-  const handleVerifyPayment = async (sub: { id: string; mpPreapprovalId?: string }) => {
+  const handleVerifyPayment = async (sub: {
+    id: string;
+    mpPreapprovalId?: string;
+    billingCycle?: BillingCycle;
+    paymentDocId?: string;
+    couponCode?: string;
+    couponRedeemed?: boolean;
+  }) => {
     if (!sub.mpPreapprovalId) {
       setSubError(
         pick({
@@ -495,6 +572,11 @@ export function SubscriptionSettingsTab({
       );
       return;
     }
+    const existingSub = subscriptions.find((s) => s.id === sub.id);
+    const resolvedCycle = sub.billingCycle || existingSub?.billingCycle || 'monthly';
+    const resolvedCouponCode = sub.couponCode || existingSub?.couponCode;
+    const resolvedCouponRedeemed = sub.couponRedeemed ?? existingSub?.couponRedeemed;
+
     setSubBusy(true);
     setSubError('');
     setSubMessage('');
@@ -515,6 +597,7 @@ export function SubscriptionSettingsTab({
           paymentId: isPix ? sub.mpPreapprovalId.slice(4) : undefined,
           subscriptionId: sub.id,
           companyId: company.id,
+          billingCycle: resolvedCycle,
         }),
       });
       const data = await res.json();
@@ -530,17 +613,48 @@ export function SubscriptionSettingsTab({
         );
         return;
       }
-      if (data.status === 'authorized') {
+      if (data.status === 'authorized' && !data.expired) {
+        await confirmAndSyncSubscription({
+          subscriptionId: sub.id,
+          mpPreapprovalId: sub.mpPreapprovalId,
+          mpStatus: String(data.mpStatus || 'authorized'),
+          nextBillingDate: data.nextBillingDate,
+          paymentDocId: sub.paymentDocId,
+          paidAt: data.paidAt,
+          couponCode: resolvedCouponCode,
+          couponRedeemed: resolvedCouponRedeemed,
+        });
         setPixCheckout((prev) => (prev ? { ...prev, approved: true } : prev));
+        setSubMessage(
+          pick({
+            pt: 'Pagamento confirmado e acesso liberado! Sua assinatura já está ativa.',
+            en: 'Payment confirmed and workspace unlocked! Your subscription is active.',
+            es: '¡Pago confirmado y acceso liberado! Su suscripción está activa.',
+            fr: 'Paiement confirmé et accès débloqué ! Votre abonnement est actif.',
+          })
+        );
+      } else if (data.expired || data.status === 'overdue') {
+        if (existingSub?.status === 'authorized') {
+          await markSubscriptionOverdueClient(sub.id);
+        }
+        setSubError(
+          pick({
+            pt: 'O prazo desta assinatura já venceu. Gere uma nova cobrança abaixo para reativar seu acesso.',
+            en: 'This subscription period has expired. Generate a new payment below to restore access.',
+            es: 'El plazo de esta suscripción ha vencido. Genere un nuevo pago abajo para reactivar su acceso.',
+            fr: 'La période de cet abonnement a expiré. Générez un nouveau paiement ci-dessous.',
+          })
+        );
+      } else {
+        setSubMessage(
+          `${pick({
+            pt: 'Status oficial verificado no Mercado Pago:',
+            en: 'Official status verified on Mercado Pago:',
+            es: 'Estado oficial verificado en Mercado Pago:',
+            fr: 'Statut officiel vérifié sur Mercado Pago :',
+          })} ${translateSubscriptionStatus(data.status, lang).label} (${data.mpStatus}).`
+        );
       }
-      setSubMessage(
-        `${pick({
-          pt: 'Status oficial verificado no Mercado Pago:',
-          en: 'Official status verified on Mercado Pago:',
-          es: 'Estado oficial verificado en Mercado Pago:',
-          fr: 'Statut officiel vérifié sur Mercado Pago :',
-        })} ${translateSubscriptionStatus(data.status, lang).label} (${data.mpStatus}).`
-      );
       onSubscriptionVerified();
     } catch (err) {
       setSubError(
@@ -962,6 +1076,46 @@ export function SubscriptionSettingsTab({
         </div>
       )}
 
+      {!isOwnerFreeMode && company.status === 'trial' && (
+        <div
+          className={`rounded-xl border p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+            isIsoDateExpired(company.trialExpiresAt)
+              ? 'bg-red-50 border-red-200'
+              : 'bg-blue-50 border-blue-200'
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <Clock
+              className={`w-5 h-5 shrink-0 mt-0.5 ${
+                isIsoDateExpired(company.trialExpiresAt) ? 'text-[#DC2626]' : 'text-[#1E40AF]'
+              }`}
+            />
+            <div>
+              <p
+                className={`text-xs font-semibold ${
+                  isIsoDateExpired(company.trialExpiresAt) ? 'text-[#DC2626]' : 'text-[#1E40AF]'
+                }`}
+              >
+                {isIsoDateExpired(company.trialExpiresAt)
+                  ? 'Período de Cliente Teste Encerrado'
+                  : 'Modo Cliente Teste Liberado Gratuitamente'}
+              </p>
+              <h3 className="mt-1 font-display text-lg font-bold text-[#0F172A]">
+                {isIsoDateExpired(company.trialExpiresAt)
+                  ? 'Seu acesso gratuito temporário expirou'
+                  : `Tempo restante: ${formatTrialRemaining(company.trialExpiresAt)}`}
+              </h3>
+              <p className="mt-1 text-xs text-slate-600">
+                {company.trialExpiresAt
+                  ? `${isIsoDateExpired(company.trialExpiresAt) ? 'Expirou em:' : 'Válido até:'} ${formatDateTimeBR(company.trialExpiresAt, lang)}`
+                  : 'Prazo temporário configurado pelo administrador.'}
+                {company.trialNote ? ` · ${company.trialNote}` : ''}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Mercado Pago Server Status */}
       {mpStatusInfo && !mpStatusInfo.configured && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 text-xs text-amber-900">
@@ -987,63 +1141,77 @@ export function SubscriptionSettingsTab({
       )}
 
       {/* Active / Latest Subscription Card */}
-      {latestSubscription && (
-        <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div>
-              <p className="text-xs font-medium text-slate-500">
-                {pick({ pt: 'Assinatura Atual', en: 'Current Subscription', es: 'Suscripción Actual', fr: 'Abonnement Actuel' })}
-              </p>
-              <h3 className="mt-1 font-display text-xl font-bold text-[#0F172A]">
-                {latestSubscription.planName} ·{' '}
-                {billingCycles.find((c) => c.id === latestSubscription.billingCycle)?.label}
-              </h3>
-              <p className="mt-1 text-xs text-slate-600 font-mono tabular-nums">
-                {pick({ pt: 'Valor:', en: 'Amount:', es: 'Valor:', fr: 'Montant :' })} {formatBRL(latestSubscription.totalAmount)} · Status:{' '}
-                <strong>{translateSubscriptionStatus(latestSubscription.status, lang).label}</strong>
-                {latestSubscription.nextBillingDate
-                  ? ` · ${pick({ pt: 'Próx. vencimento:', en: 'Next billing:', es: 'Próx. cobro:', fr: 'Prochaine échéance :' })} ${formatDateBR(latestSubscription.nextBillingDate, lang)}`
-                  : ''}
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {safeExternalUrl(latestSubscription.mpInitPoint) && latestSubscription.status === 'pending' && (
-                <a
-                  href={safeExternalUrl(latestSubscription.mpInitPoint)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A]"
-                >
-                  <span>{pick({ pt: 'Pagar no Mercado Pago', en: 'Pay on Mercado Pago', es: 'Pagar en Mercado Pago', fr: 'Payer sur Mercado Pago' })}</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
-              )}
-              {latestSubscription.mpPreapprovalId && (
-                <button
-                  type="button"
-                  disabled={subBusy}
-                  onClick={() => handleVerifyPayment(latestSubscription)}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>{pick({ pt: 'Verificar Pagamento no Servidor', en: 'Verify Payment on Server', es: 'Verificar Pago en el Servidor', fr: 'Vérifier le Paiement' })}</span>
-                </button>
-              )}
-              {latestSubscription.status !== 'cancelled' && (
-                <button
-                  type="button"
-                  disabled={subBusy}
-                  onClick={() => handleCancelSubscription(latestSubscription)}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-[#DC2626] bg-white border border-red-200 rounded-lg hover:bg-red-50 cursor-pointer"
-                >
-                  <XCircle className="w-3.5 h-3.5" />
-                  <span>{pick({ pt: 'Cancelar', en: 'Cancel', es: 'Cancelar', fr: 'Annuler' })}</span>
-                </button>
-              )}
+      {latestSubscription && (() => {
+        const effectiveLatestStatus =
+          latestSubscription.status === 'authorized' &&
+          isIsoDateExpired(latestSubscription.nextBillingDate)
+            ? 'overdue'
+            : latestSubscription.status;
+        return (
+          <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <p className="text-xs font-medium text-slate-500">
+                  {pick({ pt: 'Assinatura Atual', en: 'Current Subscription', es: 'Suscripción Actual', fr: 'Abonnement Actuel' })}
+                </p>
+                <h3 className="mt-1 font-display text-xl font-bold text-[#0F172A]">
+                  {latestSubscription.planName} ·{' '}
+                  {billingCycles.find((c) => c.id === latestSubscription.billingCycle)?.label}
+                </h3>
+                <p className="mt-1 text-xs text-slate-600 font-mono tabular-nums">
+                  {pick({ pt: 'Valor:', en: 'Amount:', es: 'Valor:', fr: 'Montant :' })} {formatBRL(latestSubscription.totalAmount)} · Status:{' '}
+                  <strong className={effectiveLatestStatus === 'overdue' ? 'text-[#DC2626]' : ''}>
+                    {translateSubscriptionStatus(effectiveLatestStatus, lang).label}
+                  </strong>
+                  {latestSubscription.nextBillingDate
+                    ? ` · ${
+                        effectiveLatestStatus === 'overdue'
+                          ? 'Venceu em:'
+                          : pick({ pt: 'Próx. vencimento:', en: 'Next billing:', es: 'Próx. cobro:', fr: 'Prochaine échéance :' })
+                      } ${formatDateBR(latestSubscription.nextBillingDate, lang)}`
+                    : ''}
+                  {latestSubscription.couponCode ? ` · Cupom: ${latestSubscription.couponCode}` : ''}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {safeExternalUrl(latestSubscription.mpInitPoint) && latestSubscription.status === 'pending' && (
+                  <a
+                    href={safeExternalUrl(latestSubscription.mpInitPoint)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A]"
+                  >
+                    <span>{pick({ pt: 'Pagar no Mercado Pago', en: 'Pay on Mercado Pago', es: 'Pagar en Mercado Pago', fr: 'Payer sur Mercado Pago' })}</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                )}
+                {latestSubscription.mpPreapprovalId && (
+                  <button
+                    type="button"
+                    disabled={subBusy}
+                    onClick={() => handleVerifyPayment(latestSubscription)}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>{pick({ pt: 'Verificar Pagamento no Servidor', en: 'Verify Payment on Server', es: 'Verificar Pago en el Servidor', fr: 'Vérifier le Paiement' })}</span>
+                  </button>
+                )}
+                {latestSubscription.status !== 'cancelled' && (
+                  <button
+                    type="button"
+                    disabled={subBusy}
+                    onClick={() => handleCancelSubscription(latestSubscription)}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-[#DC2626] bg-white border border-red-200 rounded-lg hover:bg-red-50 cursor-pointer"
+                  >
+                    <XCircle className="w-3.5 h-3.5" />
+                    <span>{pick({ pt: 'Cancelar', en: 'Cancel', es: 'Cancelar', fr: 'Annuler' })}</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Plan Selection & Cycle Calculator */}
       <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-6">
@@ -1277,6 +1445,22 @@ export function SubscriptionSettingsTab({
                   {couponFeedback.text}
                 </p>
               )}
+              {currentPlan && appliedCoupon && (() => {
+                const preview = calculatePlanPrice(currentPlan, cycle, appliedCoupon.discountPercent);
+                const savedAmount = Math.max(0, preview.afterCycleTotal - preview.finalTotal);
+                return (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-950">
+                    <span>
+                      Cupom <strong>{appliedCoupon.code}</strong> (-{appliedCoupon.discountPercent}%) aplicado no plano{' '}
+                      <strong>{currentPlan.name}</strong>
+                    </span>
+                    <span className="font-mono tabular-nums font-bold">
+                      De {formatBRL(preview.afterCycleTotal)} por {formatBRL(preview.finalTotal)} (economia de{' '}
+                      {formatBRL(savedAmount)})
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Inline Feedback Right Next to Bottom Button */}
@@ -1365,6 +1549,9 @@ export function SubscriptionSettingsTab({
                               handleVerifyPayment({
                                 id: pixCheckout.subscriptionId,
                                 mpPreapprovalId: pixCheckout.preapprovalId,
+                                billingCycle: pixCheckout.billingCycle,
+                                paymentDocId: pixCheckout.paymentDocId,
+                                couponCode: pixCheckout.couponCode,
                               })
                             }
                             className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#16A34A] rounded-lg hover:bg-[#15803D] cursor-pointer"
@@ -1417,6 +1604,9 @@ export function SubscriptionSettingsTab({
                           handleVerifyPayment({
                             id: recurringCheckout.subscriptionId,
                             mpPreapprovalId: recurringCheckout.preapprovalId,
+                            billingCycle: recurringCheckout.billingCycle,
+                            paymentDocId: recurringCheckout.paymentDocId,
+                            couponCode: recurringCheckout.couponCode,
                           })
                         }
                         className="inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
