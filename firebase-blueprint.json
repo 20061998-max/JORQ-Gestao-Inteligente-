@@ -42,6 +42,9 @@
         "logoUrl": { "type": "string", "maxLength": 1000 },
         "monthlyGoal": { "type": "number" },
         "status": { "type": "string", "enum": ["active", "suspended", "trial"] },
+        "trialExpiresAt": { "type": "string", "maxLength": 40 },
+        "trialGrantedAt": { "type": "string", "maxLength": 40 },
+        "trialNote": { "type": "string", "maxLength": 80 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -131,6 +134,8 @@
         "baseMonthlyPrice": { "type": "number" },
         "totalAmount": { "type": "number" },
         "couponCode": { "type": "string", "maxLength": 40 },
+        "couponRedeemed": { "type": "boolean" },
+        "adminActivated": { "type": "boolean" },
         "status": { "type": "string", "enum": ["pending", "authorized", "paused", "cancelled", "overdue", "suspended"] },
         "mpPreapprovalId": { "type": "string", "maxLength": 160 },
         "mpInitPoint": { "type": "string", "maxLength": 500 },

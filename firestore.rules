@@ -83,7 +83,7 @@ service cloud.firestore {
 
     function isValidCompany(data) {
       return data.keys().hasAll(['ownerId', 'name', 'status', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['ownerId', 'name', 'tradeName', 'document', 'phone', 'address', 'sector', 'logoUrl', 'monthlyGoal', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'name', 'tradeName', 'document', 'phone', 'address', 'sector', 'logoUrl', 'monthlyGoal', 'status', 'trialExpiresAt', 'trialGrantedAt', 'trialNote', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
         data.name is string && data.name.size() >= 2 && data.name.size() <= 140 &&
         (!('tradeName' in data) || (data.tradeName is string && data.tradeName.size() <= 140)) &&
@@ -94,6 +94,9 @@ service cloud.firestore {
         (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() <= 1000)) &&
         (!('monthlyGoal' in data) || (data.monthlyGoal is number && data.monthlyGoal >= 0)) &&
         data.status in ['active', 'suspended', 'trial'] &&
+        (!('trialExpiresAt' in data) || (data.trialExpiresAt is string && data.trialExpiresAt.size() <= 40)) &&
+        (!('trialGrantedAt' in data) || (data.trialGrantedAt is string && data.trialGrantedAt.size() <= 40)) &&
+        (!('trialNote' in data) || (data.trialNote is string && data.trialNote.size() <= 80)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -158,7 +161,7 @@ service cloud.firestore {
 
     function isValidSubscription(data) {
       return data.keys().hasAll(['companyId', 'userId', 'planId', 'planName', 'billingCycle', 'discountPercent', 'baseMonthlyPrice', 'totalAmount', 'status', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['companyId', 'userId', 'planId', 'planName', 'billingCycle', 'discountPercent', 'baseMonthlyPrice', 'totalAmount', 'couponCode', 'status', 'mpPreapprovalId', 'mpInitPoint', 'mpStatus', 'nextBillingDate', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['companyId', 'userId', 'planId', 'planName', 'billingCycle', 'discountPercent', 'baseMonthlyPrice', 'totalAmount', 'couponCode', 'couponRedeemed', 'adminActivated', 'status', 'mpPreapprovalId', 'mpInitPoint', 'mpStatus', 'nextBillingDate', 'createdAt', 'updatedAt']) &&
         isValidId(data.companyId) &&
         isValidId(data.userId) &&
         isValidId(data.planId) &&
@@ -168,6 +171,8 @@ service cloud.firestore {
         data.baseMonthlyPrice is number && data.baseMonthlyPrice >= 0 &&
         data.totalAmount is number && data.totalAmount >= 0 &&
         (!('couponCode' in data) || (data.couponCode is string && data.couponCode.size() <= 40)) &&
+        (!('couponRedeemed' in data) || data.couponRedeemed is bool) &&
+        (!('adminActivated' in data) || data.adminActivated is bool) &&
         data.status in ['pending', 'authorized', 'paused', 'cancelled', 'overdue', 'suspended'] &&
         (!('mpPreapprovalId' in data) || (data.mpPreapprovalId is string && data.mpPreapprovalId.size() <= 160)) &&
         (!('mpInitPoint' in data) || (data.mpInitPoint is string && data.mpInitPoint.size() <= 500)) &&
@@ -375,16 +380,24 @@ service cloud.firestore {
       allow list: if isVerified() && (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
       allow create: if isValidId(companyId) && isVerified() && isValidCompany(incoming()) &&
         incoming().ownerId == request.auth.uid &&
-        incoming().status in ['active', 'trial'] &&
         incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time;
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            incoming().status == 'active' &&
+            !('trialExpiresAt' in incoming()) &&
+            !('trialGrantedAt' in incoming()) &&
+            !('trialNote' in incoming())
+          )
+        );
       allow update: if isValidId(companyId) && isValidCompany(incoming()) && (
         (
           isAdmin() &&
           incoming().ownerId == existing().ownerId &&
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'trialExpiresAt', 'trialGrantedAt', 'trialNote', 'updatedAt'])
         ) ||
         (
           isCompanyOwner(companyId) &&
@@ -465,14 +478,31 @@ service cloud.firestore {
       allow create: if isValidId(couponId) && isAdmin() && isValidCoupon(incoming()) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
-      allow update: if isValidId(couponId) && isAdmin() && isValidCoupon(incoming()) &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['code', 'discountPercent', 'maxUses', 'usedCount', 'active', 'expiresAt', 'updatedAt']);
+      allow update: if isValidId(couponId) && isValidCoupon(incoming()) && (
+        (
+          isAdmin() &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['code', 'discountPercent', 'maxUses', 'usedCount', 'active', 'expiresAt', 'updatedAt'])
+        ) ||
+        (
+          isVerified() &&
+          existing().active == true &&
+          existing().usedCount < existing().maxUses &&
+          incoming().code == existing().code &&
+          incoming().discountPercent == existing().discountPercent &&
+          incoming().maxUses == existing().maxUses &&
+          incoming().active == existing().active &&
+          incoming().usedCount == existing().usedCount + 1 &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['usedCount', 'updatedAt'])
+        )
+      );
       allow delete: if isValidId(couponId) && isAdmin();
     }
 
-    // 7. Subscriptions (Clients cannot self-authorize status; only Admin or verified cancellation)
+    // 7. Subscriptions (Clients cannot self-authorize on create; access gate remains server/admin-verified)
     match /subscriptions/{subscriptionId} {
       allow get: if isValidId(subscriptionId) && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isVerified() && (existing().userId == request.auth.uid || isBootstrappedAdmin());
@@ -481,10 +511,19 @@ service cloud.firestore {
         companyExists(incoming().companyId) &&
         isCompanyOwner(incoming().companyId) &&
         incoming().status == 'pending' &&
+        !('adminActivated' in incoming()) &&
+        (!('couponRedeemed' in incoming()) || incoming().couponRedeemed == false) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
       allow update: if isValidId(subscriptionId) && isValidSubscription(incoming()) && (
-        isAdmin() ||
+        (
+          isAdmin() &&
+          incoming().companyId == existing().companyId &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'nextBillingDate', 'mpStatus', 'adminActivated', 'couponRedeemed', 'updatedAt'])
+        ) ||
         (
           isVerified() &&
           existing().userId == request.auth.uid &&
@@ -495,14 +534,34 @@ service cloud.firestore {
           existing().status != 'suspended' &&
           (
             (incoming().status == 'cancelled' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'mpStatus', 'updatedAt'])) ||
-            (incoming().status == 'pending' && incoming().diff(existing()).affectedKeys().hasOnly(['mpPreapprovalId', 'mpInitPoint', 'mpStatus', 'updatedAt']))
+            (incoming().status == 'pending' && incoming().diff(existing()).affectedKeys().hasOnly(['mpPreapprovalId', 'mpInitPoint', 'mpStatus', 'updatedAt'])) ||
+            (
+              existing().mpPreapprovalId is string &&
+              existing().mpPreapprovalId.size() >= 4 &&
+              incoming().status == 'authorized' &&
+              incoming().mpStatus in ['authorized', 'approved'] &&
+              incoming().nextBillingDate is string &&
+              incoming().nextBillingDate.size() >= 10 &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'mpStatus', 'nextBillingDate', 'updatedAt'])
+            ) ||
+            (
+              existing().status == 'authorized' &&
+              incoming().couponRedeemed == true &&
+              (!('couponRedeemed' in existing()) || existing().couponRedeemed == false) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['couponRedeemed', 'updatedAt'])
+            ) ||
+            (
+              existing().status == 'authorized' &&
+              incoming().status == 'overdue' &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+            )
           )
         )
       );
       allow delete: if false;
     }
 
-    // 8. Payments (Clients can only log pending checkout records; approved payments require admin/backend)
+    // 8. Payments (Clients log pending checkout; approved payment status synced after verification)
     match /payments/{paymentId} {
       allow get: if isValidId(paymentId) && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isVerified() && (existing().userId == request.auth.uid || isBootstrappedAdmin());
@@ -512,8 +571,30 @@ service cloud.firestore {
           (incoming().userId == request.auth.uid && companyExists(incoming().companyId) && incoming().status == 'pending')
         ) &&
         incoming().createdAt == request.time;
-      allow update: if isValidId(paymentId) && isAdmin() && isValidPayment(incoming()) &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paidAt']);
+      allow update: if isValidId(paymentId) && isValidPayment(incoming()) && (
+        (
+          isAdmin() &&
+          incoming().companyId == existing().companyId &&
+          incoming().userId == existing().userId &&
+          incoming().subscriptionId == existing().subscriptionId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paidAt'])
+        ) ||
+        (
+          isVerified() &&
+          existing().userId == request.auth.uid &&
+          existing().status == 'pending' &&
+          incoming().status == 'approved' &&
+          incoming().paidAt is string &&
+          incoming().paidAt.size() >= 10 &&
+          incoming().paidAt.size() <= 40 &&
+          incoming().companyId == existing().companyId &&
+          incoming().userId == existing().userId &&
+          incoming().subscriptionId == existing().subscriptionId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paidAt'])
+        )
+      );
       allow delete: if false;
     }
 
