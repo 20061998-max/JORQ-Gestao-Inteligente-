@@ -184,7 +184,7 @@ export function SubscriptionSettingsTab({
       couponCode?: string;
       couponRedeemed?: boolean;
     }) => {
-      await syncConfirmedSubscriptionClient({
+      const syncResult = await syncConfirmedSubscriptionClient({
         subscriptionId: opts.subscriptionId,
         companyId: company.id,
         userId,
@@ -194,9 +194,10 @@ export function SubscriptionSettingsTab({
         paymentDocId: opts.paymentDocId,
         paidAt: opts.paidAt,
       });
-      if (opts.couponCode && !opts.couponRedeemed) {
+      if (syncResult.ok && opts.couponCode && !opts.couponRedeemed) {
         await redeemCouponForSubscriptionClient(opts.subscriptionId, opts.couponCode);
       }
+      return syncResult;
     },
     [company.id, userId]
   );
@@ -225,7 +226,7 @@ export function SubscriptionSettingsTab({
         const data = await res.json();
         if (data.status === 'authorized' && !data.expired) {
           const matchedSub = subscriptions.find((s) => s.id === pixCheckout.subscriptionId);
-          await confirmAndSyncSubscription({
+          const syncRes = await confirmAndSyncSubscription({
             subscriptionId: pixCheckout.subscriptionId,
             mpPreapprovalId: pixCheckout.preapprovalId,
             mpStatus: String(data.mpStatus || 'approved'),
@@ -236,14 +237,22 @@ export function SubscriptionSettingsTab({
             couponRedeemed: matchedSub?.couponRedeemed,
           });
           setPixCheckout((prev) => (prev ? { ...prev, approved: true } : prev));
-          setSubMessage(
-            pick({
-              pt: 'Pagamento Pix confirmado pelo Mercado Pago! Seu acesso foi liberado automaticamente.',
-              en: 'Pix payment confirmed by Mercado Pago! Your access has been unlocked automatically.',
-              es: '¡Pago Pix confirmado por Mercado Pago! Su acceso fue liberado automáticamente.',
-              fr: 'Paiement Pix confirmé par Mercado Pago ! Votre accès est débloqué.',
-            })
-          );
+          if (syncRes.ok) {
+            setSubMessage(
+              pick({
+                pt: 'Pagamento Pix confirmado pelo Mercado Pago! Seu acesso foi liberado automaticamente.',
+                en: 'Pix payment confirmed by Mercado Pago! Your access has been unlocked automatically.',
+                es: '¡Pago Pix confirmado por Mercado Pago! Su acceso fue liberado automáticamente.',
+                fr: 'Paiement Pix confirmé par Mercado Pago ! Votre accès est débloqué.',
+              })
+            );
+          } else {
+            setSubError(
+              syncRes.permissionDenied
+                ? 'Pagamento Pix confirmado no Mercado Pago, mas as regras do Firestore ainda não foram publicadas no Firebase Console para gravar o status Ativa.'
+                : `Pagamento confirmado, mas falhou ao gravar no Firestore: ${syncRes.error || 'erro desconhecido'}`
+            );
+          }
           onSubscriptionVerified();
         }
       } catch {
@@ -614,7 +623,7 @@ export function SubscriptionSettingsTab({
         return;
       }
       if (data.status === 'authorized' && !data.expired) {
-        await confirmAndSyncSubscription({
+        const syncRes = await confirmAndSyncSubscription({
           subscriptionId: sub.id,
           mpPreapprovalId: sub.mpPreapprovalId,
           mpStatus: String(data.mpStatus || 'authorized'),
@@ -625,14 +634,22 @@ export function SubscriptionSettingsTab({
           couponRedeemed: resolvedCouponRedeemed,
         });
         setPixCheckout((prev) => (prev ? { ...prev, approved: true } : prev));
-        setSubMessage(
-          pick({
-            pt: 'Pagamento confirmado e acesso liberado! Sua assinatura já está ativa.',
-            en: 'Payment confirmed and workspace unlocked! Your subscription is active.',
-            es: '¡Pago confirmado y acceso liberado! Su suscripción está activa.',
-            fr: 'Paiement confirmé et accès débloqué ! Votre abonnement est actif.',
-          })
-        );
+        if (syncRes.ok) {
+          setSubMessage(
+            pick({
+              pt: 'Pagamento confirmado e acesso liberado! Sua assinatura já está ativa.',
+              en: 'Payment confirmed and workspace unlocked! Your subscription is active.',
+              es: '¡Pago confirmado y acceso liberado! Su suscripción está activa.',
+              fr: 'Paiement confirmé et accès débloqué ! Votre abonnement est actif.',
+            })
+          );
+        } else {
+          setSubError(
+            syncRes.permissionDenied
+              ? 'Pagamento confirmado no Mercado Pago, mas as regras do Firestore ainda não foram publicadas no Firebase Console para gravar o status Ativa.'
+              : `Pagamento confirmado, mas falhou ao gravar no Firestore: ${syncRes.error || 'erro desconhecido'}`
+          );
+        }
       } else if (data.expired || data.status === 'overdue') {
         if (existingSub?.status === 'authorized') {
           await markSubscriptionOverdueClient(sub.id);
