@@ -11,11 +11,13 @@ import {
   where,
   orderBy,
   onSnapshot,
+  runTransaction,
   serverTimestamp,
   type Unsubscribe,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage, OperationType, handleFirestoreError } from '../firebase';
+import { addMonthsToDateIso } from '../utils/format';
 import type {
   AppNotification,
   AuditLog,
@@ -592,7 +594,8 @@ export async function createPendingPaymentRecord(input: {
   amount: number;
   mpPaymentId?: string;
   paymentMethod?: string;
-}): Promise<void> {
+}): Promise<string> {
+  const payRef = doc(collection(db, 'payments'));
   const clean: Record<string, unknown> = {
     companyId: input.companyId,
     userId: input.userId,
@@ -605,9 +608,167 @@ export async function createPendingPaymentRecord(input: {
   if (input.mpPaymentId?.trim()) clean.mpPaymentId = input.mpPaymentId.trim().slice(0, 160);
   if (input.paymentMethod?.trim()) clean.paymentMethod = input.paymentMethod.trim().slice(0, 60);
   try {
-    await addDoc(collection(db, 'payments'), clean);
+    await setDoc(payRef, clean);
+    return payRef.id;
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, 'payments');
+    handleFirestoreError(err, OperationType.CREATE, `payments/${payRef.id}`);
+  }
+}
+
+export async function syncConfirmedSubscriptionClient(input: {
+  subscriptionId: string;
+  companyId: string;
+  userId: string;
+  mpPreapprovalId?: string;
+  mpStatus: string;
+  nextBillingDate?: string | null;
+  paymentDocId?: string;
+  paidAt?: string;
+}): Promise<void> {
+  if (!input.subscriptionId) return;
+  const subRef = doc(db, 'subscriptions', input.subscriptionId);
+  try {
+    const snap = await getDoc(subRef);
+    if (!snap.exists()) return;
+    const existing = snap.data() as Omit<Subscription, 'id'>;
+    if (existing.status === 'suspended' || existing.status === 'cancelled') return;
+
+    const normalizedMpStatus =
+      input.mpStatus?.toLowerCase() === 'approved' ? 'approved' : 'authorized';
+
+    if (!existing.mpPreapprovalId && input.mpPreapprovalId && existing.status === 'pending') {
+      await updateDoc(subRef, {
+        mpPreapprovalId: input.mpPreapprovalId.slice(0, 160),
+        mpInitPoint: 'https://www.mercadopago.com.br',
+        mpStatus: normalizedMpStatus,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    const fallbackNext = addMonthsToDateIso(
+      input.paidAt || new Date().toISOString(),
+      existing.billingCycle || 'monthly'
+    );
+    const resolvedNextBilling = (input.nextBillingDate || existing.nextBillingDate || fallbackNext).slice(0, 40);
+
+    if (
+      existing.status !== 'authorized' ||
+      existing.mpStatus !== normalizedMpStatus ||
+      existing.nextBillingDate !== resolvedNextBilling
+    ) {
+      await updateDoc(subRef, {
+        status: 'authorized',
+        mpStatus: normalizedMpStatus,
+        nextBillingDate: resolvedNextBilling,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    const paidAtIso = (input.paidAt || new Date().toISOString()).slice(0, 40);
+    if (input.paymentDocId) {
+      try {
+        const paySnap = await getDoc(doc(db, 'payments', input.paymentDocId));
+        if (paySnap.exists() && paySnap.data().status === 'pending') {
+          await updateDoc(doc(db, 'payments', input.paymentDocId), {
+            status: 'approved',
+            paidAt: paidAtIso,
+          });
+        }
+      } catch {
+        // ignore payment sync error
+      }
+    } else {
+      try {
+        const payQ = query(
+          collection(db, 'payments'),
+          where('userId', '==', input.userId),
+          where('companyId', '==', input.companyId)
+        );
+        const paySnaps = await getDocs(payQ);
+        for (const pDoc of paySnaps.docs) {
+          const pData = pDoc.data() as Omit<PaymentRecord, 'id'>;
+          if (pData.subscriptionId === input.subscriptionId && pData.status === 'pending') {
+            await updateDoc(doc(db, 'payments', pDoc.id), {
+              status: 'approved',
+              paidAt: paidAtIso,
+            });
+          }
+        }
+      } catch {
+        // ignore payment list sync error
+      }
+    }
+  } catch (err) {
+    console.warn('Erro ao sincronizar assinatura confirmada no Firestore:', err);
+  }
+}
+
+export async function markSubscriptionOverdueClient(subscriptionId: string): Promise<void> {
+  if (!subscriptionId) return;
+  try {
+    await updateDoc(doc(db, 'subscriptions', subscriptionId), {
+      status: 'overdue',
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    console.warn('Erro ao marcar assinatura vencida no Firestore:', err);
+  }
+}
+
+export async function redeemCouponForSubscriptionClient(
+  subscriptionId: string,
+  couponCode?: string
+): Promise<boolean> {
+  const cleanCode = couponCode?.trim().toUpperCase();
+  if (!subscriptionId || !cleanCode) return false;
+  try {
+    const subRef = doc(db, 'subscriptions', subscriptionId);
+    const subSnap = await getDoc(subRef);
+    if (!subSnap.exists()) return false;
+    const subData = subSnap.data() as Omit<Subscription, 'id'>;
+    if (subData.couponRedeemed === true || subData.status !== 'authorized') {
+      return false;
+    }
+
+    const couponSnaps = await getDocs(
+      query(collection(db, 'coupons'), where('active', '==', true))
+    );
+    const matchedDoc = couponSnaps.docs.find(
+      (d) => (d.data() as Omit<Coupon, 'id'>).code?.trim().toUpperCase() === cleanCode
+    );
+    if (!matchedDoc) return false;
+
+    const couponRef = doc(db, 'coupons', matchedDoc.id);
+    const redeemed = await runTransaction(db, async (tx) => {
+      const latestSub = await tx.get(subRef);
+      if (!latestSub.exists()) return false;
+      const latestSubData = latestSub.data() as Omit<Subscription, 'id'>;
+      if (latestSubData.couponRedeemed === true || latestSubData.status !== 'authorized') {
+        return false;
+      }
+
+      const latestCoupon = await tx.get(couponRef);
+      if (!latestCoupon.exists()) return false;
+      const cData = latestCoupon.data() as Omit<Coupon, 'id'>;
+      if (!cData.active || Number(cData.usedCount || 0) >= Number(cData.maxUses || 0)) {
+        return false;
+      }
+
+      tx.update(couponRef, {
+        usedCount: Number(cData.usedCount || 0) + 1,
+        updatedAt: serverTimestamp(),
+      });
+      tx.update(subRef, {
+        couponRedeemed: true,
+        updatedAt: serverTimestamp(),
+      });
+      return true;
+    });
+
+    return redeemed;
+  } catch (err) {
+    console.warn('Erro ao contabilizar uso do cupom:', err);
+    return false;
   }
 }
 
@@ -752,6 +913,37 @@ export async function adminUpdateCompanyStatus(
   }
 }
 
+export async function adminSetCompanyTrial(
+  companyId: string,
+  input: {
+    active: boolean;
+    expiresAt?: string;
+    note?: string;
+  }
+): Promise<void> {
+  const nowIso = new Date().toISOString().slice(0, 40);
+  const payload: Record<string, unknown> = input.active
+    ? {
+        status: 'trial',
+        trialExpiresAt: (input.expiresAt || '').slice(0, 40),
+        trialGrantedAt: nowIso,
+        trialNote: (input.note || '').trim().slice(0, 80),
+        updatedAt: serverTimestamp(),
+      }
+    : {
+        status: 'active',
+        trialExpiresAt: '',
+        trialGrantedAt: '',
+        trialNote: '',
+        updatedAt: serverTimestamp(),
+      };
+  try {
+    await updateDoc(doc(db, 'companies', companyId), payload);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `companies/${companyId}`);
+  }
+}
+
 export async function adminUpdateSubscriptionStatus(
   subscriptionId: string,
   status: Subscription['status'],
@@ -759,6 +951,7 @@ export async function adminUpdateSubscriptionStatus(
 ): Promise<void> {
   const payload: Record<string, unknown> = {
     status,
+    adminActivated: status === 'authorized',
     updatedAt: serverTimestamp(),
   };
   if (nextBillingDate?.trim()) {
