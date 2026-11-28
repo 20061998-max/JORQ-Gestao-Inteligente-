@@ -321,6 +321,77 @@ async function fetchFirestoreCompanyInfo(
   }
 }
 
+async function fetchFirestoreCouponDiscount(
+  idToken: string | undefined,
+  rawCode: string
+): Promise<{ valid: boolean; discountPercent: number; reason?: string } | null> {
+  const cleanCode = rawCode.trim().toUpperCase();
+  if (!cleanCode || !idToken || !firebaseProjectId) return null;
+  try {
+    const dbName = firestoreDatabaseId || '(default)';
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+      firebaseProjectId
+    )}/databases/${encodeURIComponent(dbName)}/documents:runQuery`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: 'coupons' }],
+          where: {
+            fieldFilter: {
+              field: { fieldPath: 'active' },
+              op: 'EQUAL',
+              value: { booleanValue: true },
+            },
+          },
+        },
+      }),
+    });
+    if (!res.ok) return null;
+    const rows = (await res.json()) as Array<{
+      document?: {
+        fields?: Record<
+          string,
+          { stringValue?: string; integerValue?: string; doubleValue?: number; booleanValue?: boolean }
+        >;
+      };
+    }>;
+    for (const row of rows) {
+      const f = row.document?.fields;
+      if (!f) continue;
+      const codeVal = (f.code?.stringValue || '').trim().toUpperCase();
+      if (codeVal !== cleanCode) continue;
+
+      const expiresAt = f.expiresAt?.stringValue || '';
+      if (expiresAt) {
+        const exp = new Date(`${expiresAt.slice(0, 10)}T23:59:59`);
+        if (!Number.isNaN(exp.getTime()) && exp.getTime() < Date.now()) {
+          return { valid: false, discountPercent: 0, reason: 'Este cupom já expirou.' };
+        }
+      }
+      const maxUses = Number(f.maxUses?.integerValue ?? f.maxUses?.doubleValue ?? 0);
+      const usedCount = Number(f.usedCount?.integerValue ?? f.usedCount?.doubleValue ?? 0);
+      if (maxUses > 0 && usedCount >= maxUses) {
+        return { valid: false, discountPercent: 0, reason: 'Este cupom atingiu o limite máximo de usos.' };
+      }
+      const discountPercent = Number(
+        f.discountPercent?.doubleValue ?? f.discountPercent?.integerValue ?? 0
+      );
+      if (discountPercent <= 0 || discountPercent > 90) {
+        return { valid: false, discountPercent: 0, reason: 'Percentual de cupom inválido.' };
+      }
+      return { valid: true, discountPercent };
+    }
+    return { valid: false, discountPercent: 0, reason: 'Cupom não encontrado ou inativo.' };
+  } catch {
+    return null;
+  }
+}
+
 // Verify Firebase ID token middleware
 interface AuthenticatedRequest extends Request {
   authUser?: {
@@ -382,7 +453,8 @@ function calculateCyclePricing(
   monthlyPrice: number,
   billingCycle: 'monthly' | 'quarterly' | 'semiannual' | 'annual',
   cycleDiscounts?: Partial<Record<'monthly' | 'quarterly' | 'semiannual' | 'annual', number>>,
-  couponDiscountPercent = 0
+  couponDiscountPercent = 0,
+  minAmount = 0.01
 ) {
   const monthsMap = {
     monthly: 1,
@@ -406,7 +478,7 @@ function calculateCyclePricing(
   const gross = monthlyPrice * months;
   const afterCycle = gross * (1 - cycleDiscount / 100);
   const couponFactor = 1 - Math.max(0, Math.min(90, couponDiscountPercent)) / 100;
-  const totalAmount = Math.max(1, Number((afterCycle * couponFactor).toFixed(2)));
+  const totalAmount = Math.max(minAmount, Number((afterCycle * couponFactor).toFixed(2)));
 
   return { months, cycleDiscount, totalAmount };
 }
@@ -493,13 +565,17 @@ function validateMpSignature(req: Request, webhookSecret: string): boolean {
   }
   if (!ts || !hashV1) return false;
 
-  const manifest = `id:${queryDataId};request-id:${xRequestId};ts:${ts};`;
-  const computed = crypto.createHmac('sha256', webhookSecret).update(manifest).digest('hex');
-
-  const bufA = Buffer.from(computed, 'hex');
+  const candidateIds = Array.from(new Set([queryDataId, queryDataId.toLowerCase()]));
   const bufB = Buffer.from(hashV1, 'hex');
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
+  for (const candidateId of candidateIds) {
+    const manifest = `id:${candidateId};request-id:${xRequestId};ts:${ts};`;
+    const computed = crypto.createHmac('sha256', webhookSecret).update(manifest).digest('hex');
+    const bufA = Buffer.from(computed, 'hex');
+    if (bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function startServer() {
@@ -583,6 +659,7 @@ async function startServer() {
         billingCycle,
         monthlyPrice,
         cycleDiscounts,
+        couponCode,
         couponDiscountPercent,
         payerEmail,
       } = req.body || {};
@@ -600,11 +677,26 @@ async function startServer() {
         return;
       }
 
+      let verifiedCouponDiscount = 0;
+      if (typeof couponCode === 'string' && couponCode.trim()) {
+        const couponCheck = await fetchFirestoreCouponDiscount(req.rawIdToken, couponCode);
+        if (couponCheck && !couponCheck.valid) {
+          res.status(400).json({ error: couponCheck.reason || 'Cupom inválido ou expirado.' });
+          return;
+        }
+        verifiedCouponDiscount = couponCheck
+          ? couponCheck.discountPercent
+          : typeof couponDiscountPercent === 'number'
+            ? Math.max(0, Math.min(90, couponDiscountPercent))
+            : 0;
+      }
+
       const { months, totalAmount } = calculateCyclePricing(
         monthlyPrice,
         billingCycle,
         cycleDiscounts,
-        typeof couponDiscountPercent === 'number' ? couponDiscountPercent : 0
+        verifiedCouponDiscount,
+        1
       );
 
       const configuredAppUrl = (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || '').trim();
@@ -614,7 +706,7 @@ async function startServer() {
           : `${req.protocol}://${req.get('host')}`;
       const appUrl = baseHostUrl.replace(/\/$/, '');
       const backUrl = `${appUrl}/?mp_return=1&subscriptionId=${encodeURIComponent(subscriptionId)}`;
-      const notificationUrl = `${appUrl}/api/mercadopago/webhook`;
+      const notificationUrl = `${appUrl}/api/mercadopago/webhook?source_news=webhooks`;
 
       try {
         const mpPayload = {
@@ -713,6 +805,7 @@ async function startServer() {
         billingCycle,
         monthlyPrice,
         cycleDiscounts,
+        couponCode,
         couponDiscountPercent,
         payerEmail,
         payerName,
@@ -731,11 +824,26 @@ async function startServer() {
         return;
       }
 
+      let verifiedCouponDiscount = 0;
+      if (typeof couponCode === 'string' && couponCode.trim()) {
+        const couponCheck = await fetchFirestoreCouponDiscount(req.rawIdToken, couponCode);
+        if (couponCheck && !couponCheck.valid) {
+          res.status(400).json({ error: couponCheck.reason || 'Cupom inválido ou expirado.' });
+          return;
+        }
+        verifiedCouponDiscount = couponCheck
+          ? couponCheck.discountPercent
+          : typeof couponDiscountPercent === 'number'
+            ? Math.max(0, Math.min(90, couponDiscountPercent))
+            : 0;
+      }
+
       const { months, totalAmount } = calculateCyclePricing(
         monthlyPrice,
         billingCycle,
         cycleDiscounts,
-        typeof couponDiscountPercent === 'number' ? couponDiscountPercent : 0
+        verifiedCouponDiscount,
+        0.01
       );
 
       const configuredAppUrl = (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || '').trim();
@@ -744,7 +852,7 @@ async function startServer() {
           ? configuredAppUrl
           : `${req.protocol}://${req.get('host')}`;
       const appUrl = baseHostUrl.replace(/\/$/, '');
-      const notificationUrl = `${appUrl}/api/mercadopago/webhook`;
+      const notificationUrl = `${appUrl}/api/mercadopago/webhook?source_news=webhooks`;
 
       const resolvedEmail =
         typeof payerEmail === 'string' && payerEmail.includes('@')
@@ -1295,8 +1403,10 @@ async function startServer() {
         }
       }
 
+      const missingMpSubIds: Array<{ subscriptionId: string; billingCycle?: string }> = [];
+
       if (rawChecks.length > 0) {
-        for (const item of rawChecks.slice(0, 10)) {
+        for (const item of rawChecks.slice(0, 25)) {
           if (item && typeof item === 'object') {
             const rec = item as Record<string, unknown>;
             const subIdVal =
@@ -1305,11 +1415,55 @@ async function startServer() {
                 : typeof rec.id === 'string'
                   ? rec.id
                   : undefined;
-            pushCandidate(
-              typeof rec.mpPreapprovalId === 'string' ? rec.mpPreapprovalId : '',
-              subIdVal,
-              typeof rec.billingCycle === 'string' ? rec.billingCycle : undefined
+            const mpIdVal = typeof rec.mpPreapprovalId === 'string' ? rec.mpPreapprovalId.trim() : '';
+            const cycleVal = typeof rec.billingCycle === 'string' ? rec.billingCycle : undefined;
+            if (mpIdVal) {
+              pushCandidate(mpIdVal, subIdVal, cycleVal);
+            } else if (subIdVal && rec.status === 'pending') {
+              missingMpSubIds.push({ subscriptionId: subIdVal, billingCycle: cycleVal });
+            }
+          }
+        }
+      }
+
+      // Include any pending/authorized server ledger entries for this company not present in rawChecks
+      for (const ledgerSub of Object.values(ledger.subscriptions)) {
+        if (
+          ledgerSub.companyId === cleanCompanyId &&
+          (ledgerSub.status === 'pending' || ledgerSub.status === 'authorized') &&
+          ledgerSub.preapprovalId
+        ) {
+          pushCandidate(ledgerSub.preapprovalId, ledgerSub.subscriptionId, ledgerSub.billingCycle);
+        }
+      }
+
+      // Discover payments by external_reference if Firestore missed mpPreapprovalId
+      if (mp.accessToken && missingMpSubIds.length > 0) {
+        for (const missing of missingMpSubIds.slice(0, 5)) {
+          try {
+            const searchRes = await fetch(
+              `https://api.mercadopago.com/v1/payments/search?external_reference=${encodeURIComponent(
+                missing.subscriptionId
+              )}&sort=date_created&criteria=desc&limit=3`,
+              {
+                headers: {
+                  Authorization: `Bearer ${mp.accessToken}`,
+                  'Content-Type': 'application/json',
+                },
+              }
             );
+            if (!searchRes.ok) continue;
+            const searchData = (await searchRes.json()) as {
+              results?: Array<Record<string, unknown>>;
+            };
+            const firstMatch =
+              searchData.results?.find((r) => String(r.status || '').toLowerCase() === 'approved') ||
+              searchData.results?.[0];
+            if (firstMatch?.id) {
+              pushCandidate(`pix_${String(firstMatch.id)}`, missing.subscriptionId, missing.billingCycle);
+            }
+          } catch {
+            // ignore transient search error
           }
         }
       }
@@ -1728,9 +1882,15 @@ async function startServer() {
             const internal = mapMpStatusToInternal(mpStatus);
             const pixKey = `pix_${dataId}`;
             const metadata = (mpData.metadata || {}) as Record<string, unknown>;
+            const extRef = String(mpData.external_reference || '').trim();
             const existing = ledger.subscriptions[pixKey];
-            const compId = existing?.companyId || String(metadata.company_id || '');
-            const resolvedCycle = String(existing?.billingCycle || metadata.billing_cycle || 'monthly');
+            const matchedByRef = !existing && extRef
+              ? Object.values(ledger.subscriptions).find((s) => s.subscriptionId === extRef)
+              : undefined;
+            const compId = existing?.companyId || matchedByRef?.companyId || String(metadata.company_id || '');
+            const resolvedCycle = String(
+              existing?.billingCycle || matchedByRef?.billingCycle || metadata.billing_cycle || 'monthly'
+            );
             const paidAt =
               typeof mpData.date_approved === 'string' && mpData.date_approved
                 ? mpData.date_approved
@@ -1740,24 +1900,27 @@ async function startServer() {
             const nextBillingDate =
               internal === 'authorized'
                 ? addMonthsIso(paidAt, getCycleMonths(resolvedCycle))
-                : existing?.nextBillingDate || null;
+                : existing?.nextBillingDate || matchedByRef?.nextBillingDate || null;
             const expired = internal === 'authorized' && isRecordExpired(nextBillingDate);
 
             const updated: VerifiedSubscriptionRecord = {
-              subscriptionId: existing?.subscriptionId || String(mpData.external_reference || pixKey),
+              subscriptionId: existing?.subscriptionId || matchedByRef?.subscriptionId || extRef || pixKey,
               companyId: compId,
-              userId: existing?.userId || String(metadata.user_id || ''),
+              userId: existing?.userId || matchedByRef?.userId || String(metadata.user_id || ''),
               preapprovalId: pixKey,
-              planId: existing?.planId || String(metadata.plan_id || ''),
-              planName: existing?.planName || String(metadata.plan_name || mpData.description || 'Plano JORQ'),
+              planId: existing?.planId || matchedByRef?.planId || String(metadata.plan_id || ''),
+              planName:
+                existing?.planName ||
+                matchedByRef?.planName ||
+                String(metadata.plan_name || mpData.description || 'Plano JORQ'),
               billingCycle: resolvedCycle,
               totalAmount:
                 typeof mpData.transaction_amount === 'number'
                   ? Number(mpData.transaction_amount)
-                  : existing?.totalAmount || 0,
+                  : existing?.totalAmount || matchedByRef?.totalAmount || 0,
               status: expired ? 'overdue' : internal,
               mpStatus,
-              paymentMethod: 'pix',
+              paymentMethod: String(mpData.payment_method_id || 'pix').toLowerCase() === 'pix' ? 'pix' : 'recurring',
               nextBillingDate,
               lastVerifiedAt: new Date().toISOString(),
               pixData: existing?.pixData,
@@ -1813,6 +1976,231 @@ async function startServer() {
       verifiedSubscriptions: Object.values(ledger.subscriptions),
     });
   });
+
+  app.post(
+    '/api/admin/reconcile-payments',
+    verifyRequestOrigin,
+    requireAuth,
+    requireAdmin,
+    async (req: AuthenticatedRequest, res) => {
+      const ledger = readLedger();
+      const mp = getMpConfig();
+      const rawPending = Array.isArray(req.body?.pendingSubscriptions)
+        ? (req.body.pendingSubscriptions as Array<Record<string, unknown>>)
+        : [];
+      let ledgerDirty = false;
+      let newlyAuthorizedCount = 0;
+
+      if (mp.accessToken) {
+        const candidates: Array<{
+          mpPreapprovalId: string;
+          subscriptionId?: string;
+          companyId?: string;
+          userId?: string;
+          planId?: string;
+          planName?: string;
+          billingCycle?: string;
+        }> = [];
+        const seenIds = new Set<string>();
+
+        const pushCand = (item: {
+          mpPreapprovalId?: string;
+          subscriptionId?: string;
+          companyId?: string;
+          userId?: string;
+          planId?: string;
+          planName?: string;
+          billingCycle?: string;
+        }) => {
+          const clean = typeof item.mpPreapprovalId === 'string' ? item.mpPreapprovalId.trim() : '';
+          if (!clean || seenIds.has(clean)) return;
+          seenIds.add(clean);
+          candidates.push({ ...item, mpPreapprovalId: clean });
+        };
+
+        const missingMpSubs: Array<{
+          subscriptionId: string;
+          companyId: string;
+          userId?: string;
+          planId?: string;
+          planName?: string;
+          billingCycle?: string;
+        }> = [];
+
+        for (const item of rawPending.slice(0, 25)) {
+          if (!item || typeof item !== 'object') continue;
+          const subId = typeof item.subscriptionId === 'string' ? item.subscriptionId.trim() : '';
+          const compId = typeof item.companyId === 'string' ? item.companyId.trim() : '';
+          const mpId = typeof item.mpPreapprovalId === 'string' ? item.mpPreapprovalId.trim() : '';
+          const userId = typeof item.userId === 'string' ? item.userId.trim() : undefined;
+          const planId = typeof item.planId === 'string' ? item.planId.trim() : undefined;
+          const planName = typeof item.planName === 'string' ? item.planName.trim() : undefined;
+          const billingCycle = typeof item.billingCycle === 'string' ? item.billingCycle.trim() : undefined;
+          if (mpId) {
+            pushCand({ mpPreapprovalId: mpId, subscriptionId: subId, companyId: compId, userId, planId, planName, billingCycle });
+          } else if (subId && compId) {
+            missingMpSubs.push({ subscriptionId: subId, companyId: compId, userId, planId, planName, billingCycle });
+          }
+        }
+
+        for (const existing of Object.values(ledger.subscriptions)) {
+          if (existing.status === 'pending' && existing.preapprovalId) {
+            pushCand({
+              mpPreapprovalId: existing.preapprovalId,
+              subscriptionId: existing.subscriptionId,
+              companyId: existing.companyId,
+              userId: existing.userId,
+              planId: existing.planId,
+              planName: existing.planName,
+              billingCycle: existing.billingCycle,
+            });
+          }
+        }
+
+        for (const missing of missingMpSubs.slice(0, 10)) {
+          try {
+            const searchRes = await fetch(
+              `https://api.mercadopago.com/v1/payments/search?external_reference=${encodeURIComponent(
+                missing.subscriptionId
+              )}&sort=date_created&criteria=desc&limit=3`,
+              {
+                headers: {
+                  Authorization: `Bearer ${mp.accessToken}`,
+                  'Content-Type': 'application/json',
+                },
+              }
+            );
+            if (!searchRes.ok) continue;
+            const searchData = (await searchRes.json()) as { results?: Array<Record<string, unknown>> };
+            const match =
+              searchData.results?.find((r) => String(r.status || '').toLowerCase() === 'approved') ||
+              searchData.results?.[0];
+            if (match?.id) {
+              pushCand({
+                mpPreapprovalId: `pix_${String(match.id)}`,
+                subscriptionId: missing.subscriptionId,
+                companyId: missing.companyId,
+                userId: missing.userId,
+                planId: missing.planId,
+                planName: missing.planName,
+                billingCycle: missing.billingCycle,
+              });
+            }
+          } catch {
+            // ignore transient search error
+          }
+        }
+
+        for (const cand of candidates.slice(0, 25)) {
+          const cleanId = cand.mpPreapprovalId;
+          const isPix = cleanId.startsWith('pix_');
+          try {
+            const mpUrl = isPix
+              ? `https://api.mercadopago.com/v1/payments/${encodeURIComponent(cleanId.slice(4))}`
+              : `https://api.mercadopago.com/preapproval/${encodeURIComponent(cleanId)}`;
+            const mpRes = await fetch(mpUrl, {
+              headers: {
+                Authorization: `Bearer ${mp.accessToken}`,
+                'Content-Type': 'application/json',
+              },
+            });
+            if (!mpRes.ok) continue;
+            const mpData = (await mpRes.json()) as Record<string, unknown>;
+            const mpStatus = String(mpData.status || 'pending');
+            const internal = mapMpStatusToInternal(mpStatus);
+            const existingSub = ledger.subscriptions[cleanId];
+            const metadata = (mpData.metadata || {}) as Record<string, unknown>;
+            const resolvedCycle = String(
+              cand.billingCycle || existingSub?.billingCycle || metadata.billing_cycle || 'monthly'
+            );
+            const paidAt = isPix
+              ? typeof mpData.date_approved === 'string' && mpData.date_approved
+                ? mpData.date_approved
+                : typeof mpData.date_created === 'string' && mpData.date_created
+                  ? mpData.date_created
+                  : new Date().toISOString()
+              : typeof mpData.date_created === 'string' && mpData.date_created
+                ? mpData.date_created
+                : new Date().toISOString();
+            const nextBillingDate = isPix
+              ? internal === 'authorized'
+                ? addMonthsIso(paidAt, getCycleMonths(resolvedCycle))
+                : existingSub?.nextBillingDate || null
+              : typeof mpData.next_payment_date === 'string' && mpData.next_payment_date
+                ? mpData.next_payment_date
+                : typeof mpData.end_date === 'string' && mpData.end_date
+                  ? mpData.end_date
+                  : internal === 'authorized'
+                    ? existingSub?.nextBillingDate || addMonthsIso(paidAt, getCycleMonths(resolvedCycle))
+                    : existingSub?.nextBillingDate || null;
+            const expired = internal === 'authorized' && isRecordExpired(nextBillingDate);
+            const effectiveStatus = expired ? 'overdue' : internal;
+            const resolvedCompId = cand.companyId || existingSub?.companyId || String(metadata.company_id || '');
+            const resolvedSubId =
+              cand.subscriptionId ||
+              existingSub?.subscriptionId ||
+              String(mpData.external_reference || cleanId);
+
+            if (effectiveStatus === 'authorized' && existingSub?.status !== 'authorized') {
+              newlyAuthorizedCount += 1;
+            }
+
+            const record: VerifiedSubscriptionRecord = {
+              subscriptionId: resolvedSubId,
+              companyId: resolvedCompId,
+              userId: cand.userId || existingSub?.userId || String(metadata.user_id || ''),
+              preapprovalId: cleanId,
+              planId: cand.planId || existingSub?.planId || String(metadata.plan_id || ''),
+              planName:
+                cand.planName ||
+                existingSub?.planName ||
+                String(metadata.plan_name || mpData.reason || mpData.description || 'Plano JORQ'),
+              billingCycle: resolvedCycle,
+              totalAmount: isPix
+                ? typeof mpData.transaction_amount === 'number'
+                  ? Number(mpData.transaction_amount)
+                  : existingSub?.totalAmount || 0
+                : typeof (mpData.auto_recurring as Record<string, unknown> | undefined)?.transaction_amount === 'number'
+                  ? Number((mpData.auto_recurring as Record<string, unknown>).transaction_amount)
+                  : existingSub?.totalAmount || 0,
+              status: effectiveStatus,
+              mpStatus,
+              paymentMethod: isPix ? 'pix' : 'recurring',
+              nextBillingDate,
+              lastVerifiedAt: new Date().toISOString(),
+              pixData: existingSub?.pixData,
+            };
+            ledger.subscriptions[cleanId] = record;
+            if (resolvedCompId) {
+              const currentAccess = ledger.companyAccess[resolvedCompId];
+              if (
+                effectiveStatus === 'authorized' ||
+                !currentAccess ||
+                currentAccess.status !== 'authorized' ||
+                isRecordExpired(currentAccess.nextBillingDate) ||
+                currentAccess.subscriptionId === resolvedSubId
+              ) {
+                ledger.companyAccess[resolvedCompId] = record;
+              }
+            }
+            ledgerDirty = true;
+          } catch {
+            // ignore transient single MP query error
+          }
+        }
+      }
+
+      if (ledgerDirty) {
+        writeLedger(ledger);
+      }
+
+      res.json({
+        logs: ledger.webhookLogs,
+        verifiedSubscriptions: Object.values(ledger.subscriptions),
+        newlyAuthorizedCount,
+      });
+    }
+  );
 
   app.post(
     '/api/admin/set-company-access',
