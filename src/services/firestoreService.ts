@@ -624,14 +624,16 @@ export async function syncConfirmedSubscriptionClient(input: {
   nextBillingDate?: string | null;
   paymentDocId?: string;
   paidAt?: string;
-}): Promise<void> {
-  if (!input.subscriptionId) return;
+}): Promise<{ ok: boolean; permissionDenied?: boolean; error?: string }> {
+  if (!input.subscriptionId) return { ok: false, error: 'subscriptionId ausente' };
   const subRef = doc(db, 'subscriptions', input.subscriptionId);
   try {
     const snap = await getDoc(subRef);
-    if (!snap.exists()) return;
+    if (!snap.exists()) return { ok: false, error: 'Assinatura não encontrada no Firestore' };
     const existing = snap.data() as Omit<Subscription, 'id'>;
-    if (existing.status === 'suspended' || existing.status === 'cancelled') return;
+    if (existing.status === 'suspended' || existing.status === 'cancelled') {
+      return { ok: false, error: 'Assinatura suspensa ou cancelada' };
+    }
 
     const normalizedMpStatus =
       input.mpStatus?.toLowerCase() === 'approved' ? 'approved' : 'authorized';
@@ -698,8 +700,13 @@ export async function syncConfirmedSubscriptionClient(input: {
         // ignore payment list sync error
       }
     }
+    return { ok: true };
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const permissionDenied =
+      msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('insufficient');
     console.warn('Erro ao sincronizar assinatura confirmada no Firestore:', err);
+    return { ok: false, permissionDenied, error: msg };
   }
 }
 
