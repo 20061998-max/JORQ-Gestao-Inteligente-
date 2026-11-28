@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Plus, Search, Trash2, CheckCircle2 } from 'lucide-react';
+import { Plus, Search, Trash2, CheckCircle2, FileText } from 'lucide-react';
 import {
   addExpense,
   addRevenue,
@@ -7,16 +7,24 @@ import {
   removeRevenue,
   updateExpense,
   updateRevenue,
+  type Company,
   type Expense,
   type LedgerTransaction,
   type Revenue,
 } from '../../services/firestoreService';
 import { formatBRL, formatDateBR } from '../../utils/format';
+import {
+  exportPeriodStatementPDF,
+  getMonthDateRange,
+  getWeekDateRange,
+} from '../../utils/export';
 import { useLanguage } from '../../contexts/LanguageContext';
 
 interface FinanceTabProps {
   companyId: string;
   userId: string;
+  company?: Company;
+  monthlyGoal?: number;
   revenues: Revenue[];
   expenses: Expense[];
   transactions: LedgerTransaction[];
@@ -25,6 +33,8 @@ interface FinanceTabProps {
 export function FinanceTab({
   companyId,
   userId,
+  company,
+  monthlyGoal,
   revenues,
   expenses,
   transactions,
@@ -205,6 +215,48 @@ export function FinanceTab({
           >
             <Plus className="w-4 h-4" />
             <span>{pick({ pt: 'Nova Despesa', en: 'New Expense', es: 'Nuevo Gasto', fr: 'Nouvelle Dépense' })}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const range = getWeekDateRange('current_week');
+              exportPeriodStatementPDF({
+                periodKind: 'weekly',
+                periodLabel: range.label,
+                startDate: range.startDate,
+                endDate: range.endDate,
+                company: company || { name: 'Empresa' },
+                monthlyGoal,
+                revenues,
+                expenses,
+                transactions,
+              });
+            }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#0F172A] rounded-lg hover:bg-slate-800 cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <FileText className="w-4 h-4" />
+            <span>Extrato Semanal PDF</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const range = getMonthDateRange();
+              exportPeriodStatementPDF({
+                periodKind: 'monthly',
+                periodLabel: range.label,
+                startDate: range.startDate,
+                endDate: range.endDate,
+                company: company || { name: 'Empresa' },
+                monthlyGoal,
+                revenues,
+                expenses,
+                transactions,
+              });
+            }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#1E40AF] bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <FileText className="w-4 h-4" />
+            <span>Extrato Mensal PDF</span>
           </button>
         </div>
       </div>

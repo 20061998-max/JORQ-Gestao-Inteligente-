@@ -34,7 +34,13 @@ import {
   type ServiceItem,
   type Subscription,
 } from '../../services/firestoreService';
-import { exportFinancialReportPDF, exportToCSV } from '../../utils/export';
+import {
+  exportFinancialReportPDF,
+  exportPeriodStatementPDF,
+  exportToCSV,
+  getMonthDateRange,
+  getWeekDateRange,
+} from '../../utils/export';
 import { formatBRL, formatCompactBRL, formatDateBR } from '../../utils/format';
 
 interface ReportsAiTabProps {
@@ -173,6 +179,26 @@ export function ReportsAiTab({
       netProfit: metrics.netProfit,
       marginPercent: metrics.marginPercent,
       transactions: filteredTx,
+    });
+  };
+
+  const handleExportPeriodStatement = (kind: 'weekly' | 'monthly') => {
+    const refMonth = periodStart ? periodStart.slice(0, 7) : undefined;
+    const range =
+      kind === 'weekly'
+        ? getWeekDateRange('current_week', periodEnd || periodStart || undefined)
+        : getMonthDateRange(refMonth);
+
+    exportPeriodStatementPDF({
+      periodKind: kind,
+      periodLabel: range.label,
+      startDate: range.startDate,
+      endDate: range.endDate,
+      company,
+      monthlyGoal,
+      revenues,
+      expenses,
+      transactions,
     });
   };
 
@@ -399,6 +425,22 @@ export function ReportsAiTab({
           >
             <FileText className="w-4 h-4" />
             <span>{repText.exportPdf}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleExportPeriodStatement('weekly')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#0F172A] rounded-lg hover:bg-slate-800 cursor-pointer"
+          >
+            <FileText className="w-4 h-4" />
+            <span>Extrato Semanal PDF</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleExportPeriodStatement('monthly')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#1E40AF] bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 cursor-pointer"
+          >
+            <FileText className="w-4 h-4" />
+            <span>Extrato Mensal PDF</span>
           </button>
         </div>
       </div>

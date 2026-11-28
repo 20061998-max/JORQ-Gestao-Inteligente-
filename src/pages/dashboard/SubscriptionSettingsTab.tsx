@@ -5,9 +5,13 @@ import {
   Clock,
   Copy,
   CreditCard,
+  Download,
   ExternalLink,
+  FileText,
+  HardDrive,
   QrCode,
   RefreshCw,
+  Smartphone,
   Upload,
   XCircle,
 } from 'lucide-react';
@@ -17,6 +21,7 @@ import {
   attachMpCheckoutToSubscription,
   createPendingPaymentRecord,
   createPendingSubscriptionRecord,
+  importCompanyBackupData,
   markNotificationRead,
   markSubscriptionCancelledClient,
   markSubscriptionOverdueClient,
@@ -28,8 +33,15 @@ import {
   validateCouponCode,
   type AppNotification,
   type Company,
+  type CustomerClient,
+  type Expense,
+  type LedgerTransaction,
   type PaymentRecord,
   type Plan,
+  type Product,
+  type Revenue,
+  type SavedReport,
+  type ServiceItem,
   type Subscription,
 } from '../../services/firestoreService';
 import {
@@ -43,6 +55,21 @@ import {
   safeExternalUrl,
   translateSubscriptionStatus,
 } from '../../utils/format';
+import {
+  buildCompanyBackupPayload,
+  downloadCompanyBackupJSON,
+  getBackupCounts,
+  MAX_BACKUP_FILE_BYTES,
+  parseAndSanitizeCompanyBackup,
+  type BackupCounts,
+  type CompanyBackupPayload,
+} from '../../utils/backup';
+import {
+  exportPeriodStatementPDF,
+  getMonthDateRange,
+  getWeekDateRange,
+  type WeeklyPreset,
+} from '../../utils/export';
 import type { BillingCycle } from '../../types';
 
 interface SubscriptionSettingsTabProps {
@@ -55,6 +82,13 @@ interface SubscriptionSettingsTabProps {
   subscriptions: Subscription[];
   payments: PaymentRecord[];
   notifications: AppNotification[];
+  revenues?: Revenue[];
+  expenses?: Expense[];
+  transactions?: LedgerTransaction[];
+  products?: Product[];
+  services?: ServiceItem[];
+  clients?: CustomerClient[];
+  savedReports?: SavedReport[];
   preselectedPlanId?: string;
   preselectedCycle?: BillingCycle;
   preferredPaymentMode?: 'pix' | 'recurring';
@@ -72,6 +106,13 @@ export function SubscriptionSettingsTab({
   subscriptions,
   payments,
   notifications,
+  revenues = [],
+  expenses = [],
+  transactions = [],
+  products = [],
+  services = [],
+  clients = [],
+  savedReports = [],
   preselectedPlanId,
   preselectedCycle,
   preferredPaymentMode,
@@ -79,7 +120,7 @@ export function SubscriptionSettingsTab({
   onSubscriptionVerified,
 }: SubscriptionSettingsTabProps) {
   const { getIdToken, refreshCompany } = useAuth();
-  const { lang, t, pick } = useLanguage();
+  const { lang, setLang, t, pick } = useLanguage();
   const billingCycles = getBillingCycles(lang);
 
   // Subscription checkout state
@@ -135,6 +176,21 @@ export function SubscriptionSettingsTab({
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState('');
+
+  // Backup Export & Restore state
+  const [pendingBackup, setPendingBackup] = useState<{
+    filename: string;
+    payload: CompanyBackupPayload;
+    counts: BackupCounts;
+  } | null>(null);
+  const [restoreCompanyProfile, setRestoreCompanyProfile] = useState(true);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMsg, setBackupMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const backupFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [weeklyPreset, setWeeklyPreset] = useState<WeeklyPreset>('current_week');
+  const [selectedStatementMonth, setSelectedStatementMonth] = useState<string>(() =>
+    new Date().toISOString().slice(0, 7)
+  );
 
   useEffect(() => {
     if (typeof companyGoal === 'number') {
@@ -202,10 +258,14 @@ export function SubscriptionSettingsTab({
     [company.id, userId]
   );
 
-  // Poll Mercado Pago every 5s while waiting for Pix QR Code payment confirmation
+  // Poll Mercado Pago every 5s and on window focus while waiting for Pix QR Code payment confirmation
   useEffect(() => {
     if (!pixCheckout || pixCheckout.approved) return;
-    const interval = window.setInterval(async () => {
+
+    let running = false;
+    const checkPixNow = async () => {
+      if (running) return;
+      running = true;
       try {
         const token = await getIdToken();
         const res = await fetch('/api/mercadopago/verify-pix-payment', {
@@ -257,9 +317,25 @@ export function SubscriptionSettingsTab({
         }
       } catch {
         // ignore background poll error
+      } finally {
+        running = false;
       }
-    }, 5000);
-    return () => window.clearInterval(interval);
+    };
+
+    const handleVisibility = () => {
+      if (window.document.visibilityState === 'visible') {
+        checkPixNow();
+      }
+    };
+
+    const interval = window.setInterval(checkPixNow, 5000);
+    window.addEventListener('focus', checkPixNow);
+    window.document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', checkPixNow);
+      window.document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [pixCheckout, company.id, getIdToken, onSubscriptionVerified, pick, subscriptions, confirmAndSyncSubscription]);
 
   const currentPlan = plans.find((p) => p.id === selectedPlanId) || plans[0];
@@ -372,6 +448,7 @@ export function SubscriptionSettingsTab({
               semiannual: currentPlan.discountSemiannual,
               annual: currentPlan.discountAnnual,
             },
+            couponCode: resolvedCoupon?.code,
             couponDiscountPercent,
             payerEmail: userEmail,
             payerName: company.name,
@@ -438,7 +515,7 @@ export function SubscriptionSettingsTab({
           })
         );
         if (data.status === 'authorized') {
-          await confirmAndSyncSubscription({
+          const syncRes = await confirmAndSyncSubscription({
             subscriptionId: subId,
             mpPreapprovalId: String(data.preapprovalId || ''),
             mpStatus: String(data.mpStatus || 'approved'),
@@ -447,6 +524,13 @@ export function SubscriptionSettingsTab({
             paidAt: data.paidAt,
             couponCode: resolvedCoupon?.code,
           });
+          if (!syncRes.ok) {
+            setSubError(
+              syncRes.permissionDenied
+                ? 'Pagamento Pix confirmado no Mercado Pago, mas as regras do Firestore ainda não foram publicadas no Firebase Console para gravar o status Ativa.'
+                : `Pagamento confirmado, mas falhou ao gravar no Firestore: ${syncRes.error || 'erro desconhecido'}`
+            );
+          }
           onSubscriptionVerified();
         }
         window.setTimeout(() => {
@@ -474,6 +558,7 @@ export function SubscriptionSettingsTab({
             semiannual: currentPlan.discountSemiannual,
             annual: currentPlan.discountAnnual,
           },
+          couponCode: resolvedCoupon?.code,
           couponDiscountPercent,
           payerEmail: userEmail,
         }),
@@ -827,6 +912,178 @@ export function SubscriptionSettingsTab({
     }
   };
 
+  const handleDownloadCompanyBackup = () => {
+    setBackupMsg(null);
+    try {
+      const payload = buildCompanyBackupPayload({
+        company,
+        monthlyGoal: Number(monthlyGoal) || companyGoal || company.monthlyGoal || 0,
+        userId,
+        revenues,
+        expenses,
+        transactions,
+        products,
+        services,
+        clients,
+        savedReports,
+      });
+      const counts = getBackupCounts(payload);
+      const filename = downloadCompanyBackupJSON(payload);
+      setBackupMsg({
+        type: 'success',
+        text: pick({
+          pt: `Backup "${filename}" baixado com sucesso (${counts.total} registros + dados da empresa e preferências locais). Guarde este arquivo no celular ou computador.`,
+          en: `Backup "${filename}" downloaded (${counts.total} records + company profile and local preferences).`,
+          es: `Respaldo "${filename}" descargado (${counts.total} registros + datos de la empresa y preferencias).`,
+          fr: `Sauvegarde "${filename}" téléchargée (${counts.total} enregistrements + données de l'entreprise).`,
+        }),
+      });
+    } catch (err) {
+      setBackupMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Erro ao gerar backup da empresa.',
+      });
+    }
+  };
+
+  const handleDownloadStatementPDF = (kind: 'weekly' | 'monthly') => {
+    setBackupMsg(null);
+    try {
+      const range =
+        kind === 'weekly'
+          ? getWeekDateRange(weeklyPreset)
+          : getMonthDateRange(selectedStatementMonth);
+
+      const filename = exportPeriodStatementPDF({
+        periodKind: kind,
+        periodLabel: range.label,
+        startDate: range.startDate,
+        endDate: range.endDate,
+        company: {
+          name: compName || company.name,
+          tradeName: tradeName || company.tradeName,
+          document: document || company.document,
+          phone: phone || company.phone,
+          sector: sector || company.sector,
+          address: address || company.address,
+        },
+        monthlyGoal: Number(monthlyGoal) || companyGoal || company.monthlyGoal || 0,
+        revenues,
+        expenses,
+        transactions,
+      });
+      setBackupMsg({
+        type: 'success',
+        text: `PDF "${filename}" gerado com o logotipo do JORQ no topo e pronto para visualização ou impressão.`,
+      });
+    } catch (err) {
+      setBackupMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Erro ao gerar extrato em PDF.',
+      });
+    }
+  };
+
+  const handleBackupFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (backupFileInputRef.current) {
+      backupFileInputRef.current.value = '';
+    }
+    if (!file) return;
+
+    setBackupMsg(null);
+    setPendingBackup(null);
+
+    if (file.size > MAX_BACKUP_FILE_BYTES) {
+      setBackupMsg({
+        type: 'error',
+        text: pick({
+          pt: 'O arquivo selecionado excede o limite de 5 MB.',
+          en: 'Selected file exceeds the 5 MB limit.',
+          es: 'El archivo seleccionado supera el límite de 5 MB.',
+          fr: 'Le fichier sélectionné dépasse la limite de 5 Mo.',
+        }),
+      });
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const { payload, counts } = parseAndSanitizeCompanyBackup(text);
+      setPendingBackup({
+        filename: file.name,
+        payload,
+        counts,
+      });
+    } catch (err) {
+      setBackupMsg({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : pick({
+                pt: 'Não foi possível ler este arquivo de backup.',
+                en: 'Could not parse this backup file.',
+                es: 'No fue posible leer este archivo de respaldo.',
+                fr: 'Impossible de lire ce fichier de sauvegarde.',
+              }),
+      });
+    }
+  };
+
+  const handleConfirmBackupRestore = async () => {
+    if (!pendingBackup) return;
+    setBackupBusy(true);
+    setBackupMsg(null);
+
+    try {
+      const summary = await importCompanyBackupData({
+        companyId: company.id,
+        userId,
+        backup: pendingBackup.payload,
+        restoreCompanyProfile,
+      });
+
+      if (summary.companyUpdated) {
+        const bComp = pendingBackup.payload.company;
+        if (bComp.name && bComp.name.length >= 2) setCompName(bComp.name);
+        if (bComp.tradeName !== undefined) setTradeName(bComp.tradeName);
+        if (bComp.document !== undefined) setDocument(bComp.document);
+        if (bComp.phone !== undefined) setPhone(bComp.phone);
+        if (bComp.address !== undefined) setAddress(bComp.address);
+        if (bComp.sector !== undefined) setSector(bComp.sector);
+        if (bComp.logoUrl !== undefined) setLogoUrl(bComp.logoUrl);
+        if (typeof bComp.monthlyGoal === 'number') setMonthlyGoal(String(bComp.monthlyGoal));
+        await refreshCompany();
+      }
+
+      if (summary.appliedLanguage) {
+        setLang(summary.appliedLanguage);
+      }
+
+      const c = summary.importedCounts;
+      const dupText =
+        summary.skippedDuplicates > 0
+          ? ` (${summary.skippedDuplicates} registros já existentes foram ignorados para evitar duplicação)`
+          : '';
+      setBackupMsg({
+        type: 'success',
+        text: `Histórico restaurado com sucesso: ${c.revenues} receitas, ${c.expenses} despesas, ${c.transactions} movimentações, ${c.products} produtos, ${c.services} serviços, ${c.clients} clientes e ${c.savedReports} relatórios importados${dupText}.`,
+      });
+      setPendingBackup(null);
+    } catch (err) {
+      setBackupMsg({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Erro ao restaurar o backup da empresa.',
+      });
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
   if (mode === 'notifications') {
     return (
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -889,6 +1146,7 @@ export function SubscriptionSettingsTab({
 
   if (mode === 'settings') {
     return (
+      <>
       <form
         onSubmit={handleSaveSettings}
         className="bg-white border border-slate-200 rounded-xl p-8 space-y-6 max-w-3xl"
@@ -1050,6 +1308,232 @@ export function SubscriptionSettingsTab({
             : pick({ pt: 'Salvar Configurações', en: 'Save Settings', es: 'Guardar Configuración', fr: 'Enregistrer' })}
         </button>
       </form>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-8 space-y-5 max-w-3xl mt-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0">
+              <HardDrive className="w-5 h-5 text-[#1E40AF]" />
+            </div>
+            <div>
+              <h3 className="font-display text-lg font-bold text-[#0F172A]">
+                {pick({
+                  pt: 'Backup e Transferência de Aparelho (Histórico Completo)',
+                  en: 'Backup & Device Transfer (Full History)',
+                  es: 'Respaldo y Transferencia de Dispositivo',
+                  fr: 'Sauvegarde et Transfert d’Appareil',
+                })}
+              </h3>
+              <p className="mt-1 text-xs text-slate-600 leading-relaxed">
+                {pick({
+                  pt: 'Baixe um arquivo portátil (.json) no seu celular ou computador com todos os dados da empresa (receitas, despesas, movimentações, produtos, serviços, clientes, relatórios, meta mensal e preferências locais) para restaurar em outro aparelho ou conta sem perder nada.',
+                  en: 'Download a portable (.json) file to your phone or computer with all company history so you can restore it on another device without losing data.',
+                  es: 'Descarga un archivo portátil (.json) en tu celular o computadora con todo el historial de la empresa para restaurarlo en otro dispositivo sin perder datos.',
+                  fr: 'Téléchargez un fichier portable (.json) sur votre téléphone ou ordinateur contenant tout l’historique de votre entreprise.',
+                })}
+              </p>
+            </div>
+          </div>
+          <Smartphone className="w-5 h-5 text-slate-400 shrink-0 hidden sm:block" />
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs">
+          <div>
+            <p className="text-slate-500">Receitas / Despesas</p>
+            <p className="mt-0.5 font-mono font-bold text-slate-900 tabular-nums">
+              {revenues.length} / {expenses.length}
+            </p>
+          </div>
+          <div>
+            <p className="text-slate-500">Movimentações</p>
+            <p className="mt-0.5 font-mono font-bold text-slate-900 tabular-nums">
+              {transactions.length}
+            </p>
+          </div>
+          <div>
+            <p className="text-slate-500">Produtos / Serviços</p>
+            <p className="mt-0.5 font-mono font-bold text-slate-900 tabular-nums">
+              {products.length} / {services.length}
+            </p>
+          </div>
+          <div>
+            <p className="text-slate-500">Clientes / Relatórios</p>
+            <p className="mt-0.5 font-mono font-bold text-slate-900 tabular-nums">
+              {clients.length} / {savedReports.length}
+            </p>
+          </div>
+        </div>
+
+        {backupMsg && (
+          <div
+            className={`p-3.5 rounded-lg border text-xs leading-relaxed ${
+              backupMsg.type === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-red-50 border-red-200 text-red-800'
+            }`}
+          >
+            {backupMsg.text}
+          </div>
+        )}
+
+        <div className="pt-2 border-t border-slate-100 space-y-4">
+          <div>
+            <h4 className="font-display text-sm font-bold text-[#0F172A]">
+              Extrato Financeiro em PDF (Semanal e Mensal com Logotipo JORQ)
+            </h4>
+            <p className="mt-1 text-xs text-slate-600">
+              Gere um extrato estruturado em PDF com o logotipo do site no topo, resumo de receitas/despesas, saldo acumulado e detalhamento por categoria.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-3">
+              <label className="block text-xs font-semibold text-slate-700">
+                Período Semanal
+              </label>
+              <select
+                value={weeklyPreset}
+                onChange={(e) => setWeeklyPreset(e.target.value as WeeklyPreset)}
+                className="w-full px-3 py-2 text-xs font-medium bg-white border border-slate-300 rounded-lg"
+              >
+                <option value="current_week">Semana Atual (Seg a Dom)</option>
+                <option value="last_7_days">Últimos 7 dias</option>
+                <option value="previous_week">Semana Anterior</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => handleDownloadStatementPDF('weekly')}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-[#0F172A] rounded-lg hover:bg-slate-800 cursor-pointer"
+              >
+                <FileText className="w-4 h-4" />
+                <span>Baixar Extrato Semanal (PDF)</span>
+              </button>
+            </div>
+
+            <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-3">
+              <label className="block text-xs font-semibold text-slate-700">
+                Mês de Referência
+              </label>
+              <input
+                type="month"
+                value={selectedStatementMonth}
+                onChange={(e) => setSelectedStatementMonth(e.target.value)}
+                className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+              />
+              <button
+                type="button"
+                onClick={() => handleDownloadStatementPDF('monthly')}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] cursor-pointer"
+              >
+                <FileText className="w-4 h-4" />
+                <span>Baixar Extrato Mensal (PDF)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={handleDownloadCompanyBackup}
+            disabled={backupBusy}
+            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] disabled:opacity-50 cursor-pointer"
+          >
+            <Download className="w-4 h-4" />
+            <span>
+              {pick({
+                pt: 'Baixar Histórico Completo (.json)',
+                en: 'Download Full Backup (.json)',
+                es: 'Descargar Respaldo Completo (.json)',
+                fr: 'Télécharger la Sauvegarde (.json)',
+              })}
+            </span>
+          </button>
+
+          <label className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer">
+            <Upload className="w-4 h-4" />
+            <span>
+              {pick({
+                pt: 'Restaurar Backup de Outro Aparelho',
+                en: 'Restore Backup from Another Device',
+                es: 'Restaurar Respaldo de Otro Equipo',
+                fr: 'Restaurer une Sauvegarde',
+              })}
+            </span>
+            <input
+              ref={backupFileInputRef}
+              type="file"
+              accept="application/json,.json"
+              onChange={handleBackupFileSelected}
+              disabled={backupBusy}
+              className="hidden"
+            />
+          </label>
+        </div>
+
+        {pendingBackup && (
+          <div className="p-5 bg-blue-50/70 border border-blue-200 rounded-xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-semibold text-[#1E40AF]">
+                  Arquivo validado pronto para restauração
+                </p>
+                <p className="text-sm font-bold text-slate-900 mt-0.5">
+                  {pendingBackup.payload.company.name || 'Empresa'} · {pendingBackup.filename}
+                </p>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Exportado em {formatDateTimeBR(pendingBackup.payload.exportedAt, lang)}
+                </p>
+              </div>
+              <span className="text-xs font-mono font-bold text-[#1E40AF] bg-white px-3 py-1.5 rounded-lg border border-blue-200">
+                {pendingBackup.counts.total} registros
+              </span>
+            </div>
+
+            <div className="text-xs text-slate-700 bg-white border border-blue-100 rounded-lg p-3 grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <span>Receitas: {pendingBackup.counts.revenues}</span>
+              <span>Despesas: {pendingBackup.counts.expenses}</span>
+              <span>Movimentações: {pendingBackup.counts.transactions}</span>
+              <span>Produtos: {pendingBackup.counts.products}</span>
+              <span>Serviços: {pendingBackup.counts.services}</span>
+              <span>Clientes: {pendingBackup.counts.clients}</span>
+              <span>Relatórios: {pendingBackup.counts.savedReports}</span>
+              <span>Meta: {formatBRL(pendingBackup.payload.company.monthlyGoal)}</span>
+            </div>
+
+            <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={restoreCompanyProfile}
+                onChange={(e) => setRestoreCompanyProfile(e.target.checked)}
+                className="rounded border-slate-300"
+              />
+              <span>Atualizar também nome, CNPJ/CPF, telefone, endereço e meta mensal desta empresa</span>
+            </label>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                disabled={backupBusy}
+                onClick={handleConfirmBackupRestore}
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#16A34A] rounded-lg hover:bg-emerald-700 disabled:opacity-50 cursor-pointer"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{backupBusy ? 'Restaurando dados...' : 'Confirmar Restauração Agora'}</span>
+              </button>
+              <button
+                type="button"
+                disabled={backupBusy}
+                onClick={() => setPendingBackup(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
     );
   }
 
@@ -1399,6 +1883,18 @@ export function SubscriptionSettingsTab({
                         if (appliedCoupon && val.trim() !== appliedCoupon.code) {
                           setAppliedCoupon(null);
                           setCouponFeedback(null);
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleApplyCoupon();
+                        }
+                      }}
+                      onBlur={() => {
+                        const clean = couponCode.trim().toUpperCase();
+                        if (clean.length >= 3 && (!appliedCoupon || appliedCoupon.code !== clean) && !couponBusy) {
+                          handleApplyCoupon();
                         }
                       }}
                       placeholder="EX: BEMVINDO10"
