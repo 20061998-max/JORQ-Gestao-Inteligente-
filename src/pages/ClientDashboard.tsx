@@ -111,6 +111,7 @@ export function ClientDashboard({
   const [privateGoal, setPrivateGoal] = useState<number | null>(null);
   const [serverAccessVerified, setServerAccessVerified] = useState(false);
   const [serverPaidAccessVerified, setServerPaidAccessVerified] = useState(false);
+  const [serverPaidExpiresAt, setServerPaidExpiresAt] = useState<string | null>(null);
   const [accessChecked, setAccessChecked] = useState(isAdmin);
   const [subsLoaded, setSubsLoaded] = useState(false);
   const [verifyingPaywall, setVerifyingPaywall] = useState(false);
@@ -198,13 +199,19 @@ export function ClientDashboard({
         (s.status === 'authorized' && !isSubscriptionActiveAndValid(s, nowMs))
     );
 
+  const serverPaidValid = Boolean(
+    serverPaidAccessVerified &&
+      (!serverPaidExpiresAt || !isIsoDateExpired(serverPaidExpiresAt, nowMs))
+  );
+
   const hasPaidAccess =
     Boolean(company) &&
     company!.status !== 'suspended' &&
     (isAdmin ||
       isTrialValid ||
       hasAdminActivatedSub ||
-      ((hasAnyValidSub || serverPaidAccessVerified) && !hasExpiredPlanOnly) ||
+      hasAnyValidSub ||
+      serverPaidValid ||
       (serverAccessVerified && !isTrialExpired && !hasExpiredPlanOnly));
   const accessReady = isAdmin || (accessChecked && subsLoaded);
 
@@ -249,7 +256,7 @@ export function ClientDashboard({
         const data = (await res.json()) as {
           verified: boolean;
           paidSubActive?: boolean;
-          activeRecord?: unknown;
+          activeRecord?: { nextBillingDate?: string | null } | null;
           syncedSubscriptions?: Array<{
             subscriptionId: string;
             mpPreapprovalId?: string;
@@ -262,6 +269,7 @@ export function ClientDashboard({
         };
         setServerAccessVerified(Boolean(data.verified));
         setServerPaidAccessVerified(Boolean(data.paidSubActive ?? data.activeRecord));
+        setServerPaidExpiresAt(data.activeRecord?.nextBillingDate || null);
 
         if (Array.isArray(data.syncedSubscriptions)) {
           for (const item of data.syncedSubscriptions) {
@@ -310,6 +318,7 @@ export function ClientDashboard({
           const fallbackData = await fallbackRes.json();
           setServerAccessVerified(Boolean(fallbackData.verified));
           setServerPaidAccessVerified(Boolean(fallbackData.paidSubActive ?? fallbackData.record));
+          setServerPaidExpiresAt(fallbackData.record?.nextBillingDate || null);
         }
       }
     } catch {
