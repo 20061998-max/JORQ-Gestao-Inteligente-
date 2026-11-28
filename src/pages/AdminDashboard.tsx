@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -13,6 +13,8 @@ import {
   CreditCard,
   Download,
   FileSearch,
+  FileText,
+  HardDrive,
   Lock,
   LogOut,
   Mail,
@@ -25,8 +27,10 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
+  Smartphone,
   Tag,
   Trash2,
+  Upload,
   Users,
   X,
 } from 'lucide-react';
@@ -67,6 +71,8 @@ import {
   adminUpdateCompanyStatus,
   adminUpdateSubscriptionStatus,
   createAuditLog,
+  importAdminPlatformBackupData,
+  redeemCouponForSubscriptionClient,
   subscribeAdminCollection,
   type AuditLog,
   type Company,
@@ -78,7 +84,21 @@ import {
   type SystemSettings,
   type UserProfile,
 } from '../services/firestoreService';
-import { exportToCSV } from '../utils/export';
+import {
+  exportAdminBillingStatementPDF,
+  exportToCSV,
+  getMonthDateRange,
+  getWeekDateRange,
+  type WeeklyPreset,
+} from '../utils/export';
+import {
+  buildAdminPlatformBackupPayload,
+  downloadAdminPlatformBackupJSON,
+  MAX_BACKUP_FILE_BYTES,
+  parseAndSanitizeAdminPlatformBackup,
+  type AdminBackupCounts,
+  type AdminPlatformBackupPayload,
+} from '../utils/backup';
 import {
   addMonthsToDateIso,
   formatBRL,
@@ -96,6 +116,7 @@ import {
 type AdminTabId =
   | 'executive'
   | 'clients'
+  | 'payments'
   | 'plans'
   | 'coupons'
   | 'billing'
@@ -153,6 +174,20 @@ interface VerifiedSubscriptionServerItem {
   billingCycle: string;
   status: string;
   nextBillingDate: string | null;
+  totalAmount?: number;
+  paymentMethod?: string;
+  lastVerifiedAt?: string;
+  mpStatus?: string;
+}
+
+interface LivePaymentPopup {
+  id: string;
+  clientName: string;
+  companyName: string;
+  planName: string;
+  amount: number;
+  paymentMethod: string;
+  paidAt: string;
 }
 
 export function AdminDashboard({
@@ -182,8 +217,21 @@ export function AdminDashboard({
   const [verifiedSubscriptions, setVerifiedSubscriptions] = useState<VerifiedSubscriptionServerItem[]>([]);
   const [notifiedSubIds, setNotifiedSubIds] = useState<Record<string, boolean>>({});
   const [billingFeedback, setBillingFeedback] = useState('');
+  const [refreshingMp, setRefreshingMp] = useState(false);
   const [clientSearch, setClientSearch] = useState('');
+  const [paymentSearch, setPaymentSearch] = useState('');
+  const [paymentFilter, setPaymentFilter] = useState<'all' | 'approved' | 'pending'>('all');
+  const [paymentPopups, setPaymentPopups] = useState<LivePaymentPopup[]>([]);
+  const [unseenPaymentCount, setUnseenPaymentCount] = useState(0);
   const [copiedContactId, setCopiedContactId] = useState('');
+  const autoActivatingSubIdsRef = useRef<Set<string>>(new Set());
+  const subscriptionsRef = useRef<Subscription[]>([]);
+  subscriptionsRef.current = subscriptions;
+  const knownApprovedKeysRef = useRef<Set<string>>(new Set());
+  const initialPaymentsSeededRef = useRef(false);
+  const initialMpSeededRef = useRef(false);
+  const activeTabRef = useRef<AdminTabId>(activeTab);
+  activeTabRef.current = activeTab;
 
   // Cliente Teste modal state
   const [trialModalCompany, setTrialModalCompany] = useState<{
@@ -231,6 +279,25 @@ export function AdminDashboard({
   const [maintenanceMode, setMaintenanceMode] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState('');
 
+  // Admin PDF statement & platform backup state
+  const { setLang } = useLanguage();
+  const [adminWeeklyPreset, setAdminWeeklyPreset] = useState<WeeklyPreset>('current_week');
+  const [adminStatementMonth, setAdminStatementMonth] = useState<string>(() =>
+    new Date().toISOString().slice(0, 7)
+  );
+  const [pendingAdminBackup, setPendingAdminBackup] = useState<{
+    filename: string;
+    payload: AdminPlatformBackupPayload;
+    counts: AdminBackupCounts;
+  } | null>(null);
+  const [restoreAdminSettings, setRestoreAdminSettings] = useState(true);
+  const [adminBackupBusy, setAdminBackupBusy] = useState(false);
+  const [adminBackupMsg, setAdminBackupMsg] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+  const adminBackupFileRef = useRef<HTMLInputElement | null>(null);
+
   useEffect(() => {
     const id = window.setInterval(() => setNowMs(Date.now()), 30000);
     return () => window.clearInterval(id);
@@ -276,6 +343,15 @@ export function AdminDashboard({
       .then((data) => {
         if (data?.logs) setWebhookLogs(data.logs);
         if (Array.isArray(data?.verifiedSubscriptions)) {
+          if (!initialMpSeededRef.current) {
+            (data.verifiedSubscriptions as VerifiedSubscriptionServerItem[]).forEach((vs) => {
+              if (vs.status === 'authorized') {
+                if (vs.subscriptionId) knownApprovedKeysRef.current.add(`sub:${vs.subscriptionId}`);
+                if (vs.preapprovalId) knownApprovedKeysRef.current.add(`mp:${vs.preapprovalId}`);
+              }
+            });
+            initialMpSeededRef.current = true;
+          }
           setVerifiedSubscriptions(data.verifiedSubscriptions);
         }
       })
@@ -287,6 +363,277 @@ export function AdminDashboard({
       unsubs.forEach((u) => u());
     };
   }, [isAdmin, firebaseUser, getIdToken]);
+
+  const reconcileMpPayments = useCallback(async () => {
+    if (!isAdmin || !firebaseUser) return;
+    setRefreshingMp(true);
+    try {
+      const token = await getIdToken();
+      const pendingSubs = subscriptionsRef.current
+        .filter((s) => s.status === 'pending' || s.status === 'overdue')
+        .map((s) => ({
+          subscriptionId: s.id,
+          companyId: s.companyId,
+          userId: s.userId,
+          planId: s.planId,
+          planName: s.planName,
+          billingCycle: s.billingCycle,
+          mpPreapprovalId: s.mpPreapprovalId,
+          status: s.status,
+        }));
+      const res = await fetch('/api/admin/reconcile-payments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ pendingSubscriptions: pendingSubs }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data?.logs)) setWebhookLogs(data.logs);
+        if (Array.isArray(data?.verifiedSubscriptions)) {
+          setVerifiedSubscriptions(data.verifiedSubscriptions);
+        }
+      }
+    } catch {
+      // ignore transient network failure
+    } finally {
+      setRefreshingMp(false);
+    }
+  }, [isAdmin, firebaseUser, getIdToken]);
+
+  useEffect(() => {
+    if (!isAdmin || !firebaseUser) return;
+    const runIfVisible = () => {
+      if (window.document.visibilityState === 'visible') {
+        reconcileMpPayments();
+      }
+    };
+    const initialTimer = window.setTimeout(runIfVisible, 1200);
+    const intervalId = window.setInterval(runIfVisible, 15000);
+    window.addEventListener('focus', runIfVisible);
+    window.document.addEventListener('visibilitychange', runIfVisible);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', runIfVisible);
+      window.document.removeEventListener('visibilitychange', runIfVisible);
+    };
+  }, [isAdmin, firebaseUser, reconcileMpPayments]);
+
+  // Auto-activate paid subscriptions in Firestore as soon as payment confirmation arrives
+  useEffect(() => {
+    if (!isAdmin || !firebaseUser || subscriptions.length === 0) return;
+
+    const activateConfirmed = async () => {
+      for (const s of subscriptions) {
+        if (s.status !== 'pending' && s.status !== 'overdue') continue;
+        if (autoActivatingSubIdsRef.current.has(s.id)) continue;
+
+        const serverMatch = verifiedSubscriptions.find(
+          (vs) =>
+            (vs.subscriptionId === s.id ||
+              (Boolean(s.mpPreapprovalId) && vs.preapprovalId === s.mpPreapprovalId)) &&
+            vs.status === 'authorized' &&
+            (!vs.nextBillingDate || !isIsoDateExpired(vs.nextBillingDate, Date.now()))
+        );
+        const approvedPayment = payments.find(
+          (p) => p.subscriptionId === s.id && p.status === 'approved'
+        );
+
+        if (!serverMatch && !approvedPayment) continue;
+
+        autoActivatingSubIdsRef.current.add(s.id);
+        try {
+          const nextDue =
+            serverMatch?.nextBillingDate ||
+            (s.nextBillingDate && !isIsoDateExpired(s.nextBillingDate, Date.now())
+              ? s.nextBillingDate
+              : addMonthsToDateIso(
+                  approvedPayment?.paidAt || new Date().toISOString(),
+                  s.billingCycle || 'monthly'
+                ));
+
+          await adminUpdateSubscriptionStatus(s.id, 'authorized', nextDue);
+
+          const comp = companies.find((c) => c.id === s.companyId);
+          if (comp?.status === 'suspended') {
+            await adminUpdateCompanyStatus(comp.id, 'active');
+          }
+
+          if (s.couponCode && !s.couponRedeemed) {
+            await redeemCouponForSubscriptionClient(s.id, s.couponCode);
+          }
+
+          if (!serverMatch) {
+            try {
+              const token = await getIdToken();
+              await fetch('/api/admin/set-company-access', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                  companyId: s.companyId,
+                  subscriptionId: s.id,
+                  userId: s.userId,
+                  planId: s.planId,
+                  planName: s.planName,
+                  billingCycle: s.billingCycle,
+                  totalAmount: s.totalAmount,
+                  status: 'authorized',
+                  nextBillingDate: nextDue,
+                }),
+              });
+            } catch {
+              // ignore transient server ledger sync
+            }
+          }
+
+          await createAuditLog({
+            actorUid: firebaseUser.uid,
+            actorEmail: firebaseUser.email || '',
+            companyId: s.companyId,
+            action: 'AUTO_ACTIVATE_PAID_SUBSCRIPTION',
+            targetCollection: 'subscriptions',
+            targetId: s.id,
+            details: `Plano ${s.planName} (${comp?.name || s.companyId}) liberado automaticamente pelo painel após confirmação de pagamento.`,
+          });
+
+          setBillingFeedback(
+            `Pagamento confirmado! Plano ${s.planName} de ${comp?.name || s.companyId} foi liberado automaticamente.`
+          );
+        } catch (err) {
+          console.warn('Falha ao liberar assinatura automaticamente:', err);
+          autoActivatingSubIdsRef.current.delete(s.id);
+        }
+      }
+    };
+
+    activateConfirmed();
+  }, [isAdmin, firebaseUser, subscriptions, payments, verifiedSubscriptions, companies, getIdToken]);
+
+  const enqueuePaymentPopup = useCallback((popup: LivePaymentPopup) => {
+    setPaymentPopups((prev) => [popup, ...prev.filter((x) => x.id !== popup.id)].slice(0, 4));
+    if (activeTabRef.current !== 'payments') {
+      setUnseenPaymentCount((prev) => prev + 1);
+    }
+    try {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1174.66, ctx.currentTime + 0.14);
+        gain.gain.setValueAtTime(0.06, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.36);
+      }
+    } catch {
+      // ignore audio autoplay restriction
+    }
+  }, []);
+
+  // Detect new confirmed payments in real time (from Firestore or Mercado Pago poll) and show pop-up
+  useEffect(() => {
+    if (!isAdmin || !firebaseUser) return;
+
+    const resolveNames = (companyId: string, userId?: string) => {
+      const comp = companies.find((c) => c.id === companyId);
+      const owner =
+        companyMembers.find((m) => m.companyId === companyId && m.role === 'owner') ||
+        companyMembers.find((m) => m.companyId === companyId) ||
+        users.find((u) => u.uid === (comp?.ownerId || userId));
+      return {
+        companyName: comp?.name || companyId || 'Empresa',
+        clientName: owner?.name || comp?.name || 'Cliente',
+      };
+    };
+
+    if (!initialPaymentsSeededRef.current) {
+      if (payments.length > 0 || subscriptions.length > 0) {
+        payments.forEach((p) => {
+          if (p.status === 'approved') {
+            knownApprovedKeysRef.current.add(`pay:${p.id}`);
+            if (p.subscriptionId) knownApprovedKeysRef.current.add(`sub:${p.subscriptionId}`);
+          }
+        });
+        subscriptions.forEach((s) => {
+          if (s.status === 'authorized') {
+            knownApprovedKeysRef.current.add(`sub:${s.id}`);
+          }
+        });
+        initialPaymentsSeededRef.current = true;
+      }
+      return;
+    }
+
+    for (const p of payments) {
+      if (p.status !== 'approved') continue;
+      const payKey = `pay:${p.id}`;
+      const subKey = p.subscriptionId ? `sub:${p.subscriptionId}` : '';
+      if (knownApprovedKeysRef.current.has(payKey) || (subKey && knownApprovedKeysRef.current.has(subKey))) {
+        knownApprovedKeysRef.current.add(payKey);
+        if (subKey) knownApprovedKeysRef.current.add(subKey);
+        continue;
+      }
+      knownApprovedKeysRef.current.add(payKey);
+      if (subKey) knownApprovedKeysRef.current.add(subKey);
+      const sub = subscriptions.find((s) => s.id === p.subscriptionId);
+      const names = resolveNames(p.companyId, p.userId);
+      enqueuePaymentPopup({
+        id: payKey,
+        clientName: names.clientName,
+        companyName: names.companyName,
+        planName: sub?.planName || 'Plano JORQ',
+        amount: Number(p.amount) || Number(sub?.totalAmount) || 0,
+        paymentMethod: p.paymentMethod === 'pix' ? 'Pix' : p.paymentMethod || 'Mercado Pago',
+        paidAt: p.paidAt || new Date().toISOString(),
+      });
+    }
+
+    for (const vs of verifiedSubscriptions) {
+      if (vs.status !== 'authorized') continue;
+      const mpKey = vs.preapprovalId ? `mp:${vs.preapprovalId}` : '';
+      const subKey = vs.subscriptionId ? `sub:${vs.subscriptionId}` : '';
+      if (!initialMpSeededRef.current) {
+        if (mpKey) knownApprovedKeysRef.current.add(mpKey);
+        if (subKey) knownApprovedKeysRef.current.add(subKey);
+        continue;
+      }
+      if ((mpKey && knownApprovedKeysRef.current.has(mpKey)) || (subKey && knownApprovedKeysRef.current.has(subKey))) {
+        if (mpKey) knownApprovedKeysRef.current.add(mpKey);
+        if (subKey) knownApprovedKeysRef.current.add(subKey);
+        continue;
+      }
+      if (mpKey) knownApprovedKeysRef.current.add(mpKey);
+      if (subKey) knownApprovedKeysRef.current.add(subKey);
+      const sub = subscriptions.find((s) => s.id === vs.subscriptionId);
+      const names = resolveNames(vs.companyId, vs.userId);
+      enqueuePaymentPopup({
+        id: mpKey || subKey || crypto.randomUUID(),
+        clientName: names.clientName,
+        companyName: names.companyName,
+        planName: vs.planName || sub?.planName || 'Plano JORQ',
+        amount: Number(vs.totalAmount ?? sub?.totalAmount ?? 0),
+        paymentMethod: vs.paymentMethod === 'pix' || vs.preapprovalId.startsWith('pix_') ? 'Pix' : 'Assinatura MP',
+        paidAt: vs.lastVerifiedAt || new Date().toISOString(),
+      });
+    }
+
+    if (verifiedSubscriptions.length > 0 && !initialMpSeededRef.current) {
+      initialMpSeededRef.current = true;
+    }
+  }, [isAdmin, firebaseUser, payments, subscriptions, verifiedSubscriptions, companies, companyMembers, users, enqueuePaymentPopup]);
 
   const fetchSecurityStatus = async () => {
     if (!isAdmin || !firebaseUser) return;
@@ -458,8 +805,7 @@ export function AdminDashboard({
       const serverMatch = verifiedSubscriptions.find(
         (vs) =>
           vs.subscriptionId === s.id ||
-          (s.mpPreapprovalId && vs.preapprovalId === s.mpPreapprovalId) ||
-          vs.companyId === s.companyId
+          (Boolean(s.mpPreapprovalId) && vs.preapprovalId === s.mpPreapprovalId)
       );
       const dueDateIso = serverMatch?.nextBillingDate || getSubscriptionDueDateIso(s);
       const daysRemaining = getDaysUntilDate(dueDateIso);
@@ -488,6 +834,189 @@ export function AdminDashboard({
     () => subscriptionDueRows.filter((row) => row.isOverdue || row.isExpiringSoon),
     [subscriptionDueRows]
   );
+
+  const unifiedPayments = useMemo(() => {
+    interface UnifiedPaymentItem {
+      key: string;
+      subscriptionId: string;
+      companyId: string;
+      companyName: string;
+      clientName: string;
+      clientEmail: string;
+      planName: string;
+      billingCycle: string;
+      couponCode?: string;
+      amount: number;
+      paymentMethod: string;
+      mpResourceId: string;
+      status: 'approved' | 'pending' | 'suspended' | 'other';
+      statusLabel: string;
+      autoActivated: boolean;
+      dateIso: string;
+      sortTs: number;
+      subscription?: Subscription;
+    }
+
+    const items: UnifiedPaymentItem[] = [];
+    const coveredSubIds = new Set<string>();
+
+    const lookupParty = (companyId: string, userId?: string) => {
+      const dir = clientDirectory.find((d) => d.company.id === companyId);
+      const comp = companies.find((c) => c.id === companyId);
+      const userMatch = users.find((u) => u.uid === userId);
+      return {
+        companyName: dir?.company.name || comp?.name || companyId || '—',
+        clientName: dir?.clientName || userMatch?.name || comp?.name || 'Cliente',
+        clientEmail: dir?.clientEmail || userMatch?.email || '',
+      };
+    };
+
+    payments.forEach((p) => {
+      const sub = subscriptions.find((s) => s.id === p.subscriptionId);
+      if (sub) coveredSubIds.add(sub.id);
+      const party = lookupParty(p.companyId, p.userId);
+      const isSuspended = sub?.status === 'suspended' || sub?.status === 'cancelled';
+      const isApproved = p.status === 'approved' && !isSuspended;
+      const dateStr =
+        p.paidAt ||
+        (p.createdAt?.seconds ? new Date(p.createdAt.seconds * 1000).toISOString() : '');
+      const sortTs = dateStr ? Date.parse(dateStr) || 0 : (p.createdAt?.seconds || 0) * 1000;
+      items.push({
+        key: `pay_${p.id}`,
+        subscriptionId: p.subscriptionId,
+        companyId: p.companyId,
+        companyName: party.companyName,
+        clientName: party.clientName,
+        clientEmail: party.clientEmail,
+        planName: sub?.planName || 'Plano JORQ',
+        billingCycle: sub?.billingCycle || 'monthly',
+        couponCode: sub?.couponCode,
+        amount: Number(p.amount) || Number(sub?.totalAmount) || 0,
+        paymentMethod:
+          p.paymentMethod === 'pix'
+            ? 'Pix'
+            : p.paymentMethod === 'mercadopago'
+              ? 'Cartão / Assinatura MP'
+              : p.paymentMethod || 'Mercado Pago',
+        mpResourceId: p.mpPaymentId || sub?.mpPreapprovalId || '—',
+        status: isSuspended ? 'suspended' : isApproved ? 'approved' : p.status === 'pending' ? 'pending' : 'other',
+        statusLabel: isSuspended
+          ? 'Plano desativado'
+          : isApproved
+            ? 'Pago · Liberado automaticamente'
+            : p.status === 'pending'
+              ? 'Aguardando pagamento'
+              : p.status,
+        autoActivated: isApproved,
+        dateIso: dateStr,
+        sortTs,
+        subscription: sub,
+      });
+    });
+
+    verifiedSubscriptions.forEach((vs) => {
+      if (vs.subscriptionId && coveredSubIds.has(vs.subscriptionId)) return;
+      const sub = subscriptions.find((s) => s.id === vs.subscriptionId);
+      if (sub) coveredSubIds.add(sub.id);
+      const party = lookupParty(vs.companyId, vs.userId);
+      const isSuspended = sub?.status === 'suspended' || sub?.status === 'cancelled' || vs.status === 'paused';
+      const isApproved = vs.status === 'authorized' && !isSuspended;
+      const dateStr = vs.lastVerifiedAt || '';
+      const sortTs = dateStr ? Date.parse(dateStr) || 0 : 0;
+      items.push({
+        key: `vs_${vs.preapprovalId || vs.subscriptionId}`,
+        subscriptionId: vs.subscriptionId,
+        companyId: vs.companyId,
+        companyName: party.companyName,
+        clientName: party.clientName,
+        clientEmail: party.clientEmail,
+        planName: vs.planName || sub?.planName || 'Plano JORQ',
+        billingCycle: vs.billingCycle || sub?.billingCycle || 'monthly',
+        couponCode: sub?.couponCode,
+        amount: Number(vs.totalAmount ?? sub?.totalAmount ?? 0),
+        paymentMethod:
+          vs.paymentMethod === 'pix' || vs.preapprovalId.startsWith('pix_')
+            ? 'Pix'
+            : 'Assinatura MP',
+        mpResourceId: vs.preapprovalId || '—',
+        status: isSuspended ? 'suspended' : isApproved ? 'approved' : vs.status === 'pending' ? 'pending' : 'other',
+        statusLabel: isSuspended
+          ? 'Plano desativado'
+          : isApproved
+            ? 'Pago · Liberado automaticamente'
+            : 'Aguardando confirmação MP',
+        autoActivated: isApproved,
+        dateIso: dateStr,
+        sortTs,
+        subscription: sub,
+      });
+    });
+
+    subscriptions.forEach((s) => {
+      if (coveredSubIds.has(s.id)) return;
+      const party = lookupParty(s.companyId, s.userId);
+      const valid = isSubscriptionActiveAndValid(s, nowMs);
+      const isSuspended = s.status === 'suspended' || s.status === 'cancelled';
+      const sec = s.updatedAt?.seconds || s.createdAt?.seconds || 0;
+      const dateStr = sec ? new Date(sec * 1000).toISOString() : '';
+      items.push({
+        key: `sub_${s.id}`,
+        subscriptionId: s.id,
+        companyId: s.companyId,
+        companyName: party.companyName,
+        clientName: party.clientName,
+        clientEmail: party.clientEmail,
+        planName: s.planName,
+        billingCycle: s.billingCycle,
+        couponCode: s.couponCode,
+        amount: Number(s.totalAmount) || 0,
+        paymentMethod: s.mpPreapprovalId?.startsWith('pix_') ? 'Pix' : 'Mercado Pago',
+        mpResourceId: s.mpPreapprovalId || '—',
+        status: isSuspended ? 'suspended' : valid ? 'approved' : s.status === 'pending' ? 'pending' : 'other',
+        statusLabel: isSuspended
+          ? 'Plano desativado'
+          : valid
+            ? 'Pago · Liberado automaticamente'
+            : s.status === 'pending'
+              ? 'Aguardando pagamento'
+              : translateSubscriptionStatus(s.status, 'pt').label,
+        autoActivated: valid && !isSuspended,
+        dateIso: dateStr,
+        sortTs: sec * 1000,
+        subscription: s,
+      });
+    });
+
+    return items.sort((a, b) => b.sortTs - a.sortTs);
+  }, [payments, verifiedSubscriptions, subscriptions, clientDirectory, companies, users, nowMs]);
+
+  const filteredUnifiedPayments = useMemo(() => {
+    const q = paymentSearch.trim().toLowerCase();
+    return unifiedPayments.filter((item) => {
+      if (paymentFilter === 'approved' && item.status !== 'approved') return false;
+      if (paymentFilter === 'pending' && item.status !== 'pending') return false;
+      if (!q) return true;
+      return (
+        item.clientName.toLowerCase().includes(q) ||
+        item.companyName.toLowerCase().includes(q) ||
+        item.clientEmail.toLowerCase().includes(q) ||
+        item.planName.toLowerCase().includes(q) ||
+        item.mpResourceId.toLowerCase().includes(q) ||
+        (item.couponCode || '').toLowerCase().includes(q)
+      );
+    });
+  }, [unifiedPayments, paymentSearch, paymentFilter]);
+
+  const paymentSummary = useMemo(() => {
+    const approved = unifiedPayments.filter((p) => p.status === 'approved');
+    const pending = unifiedPayments.filter((p) => p.status === 'pending');
+    const totalApproved = approved.reduce((sum, p) => sum + p.amount, 0);
+    return {
+      totalApproved,
+      approvedCount: approved.length,
+      pendingCount: pending.length,
+    };
+  }, [unifiedPayments]);
 
   if (!isAdmin || !firebaseUser) {
     return (
@@ -771,6 +1300,162 @@ export function AdminDashboard({
     setSettingsMsg('Configurações gerais salvas e registradas na auditoria.');
   };
 
+  const handleExportAdminStatementPDF = (kind: 'weekly' | 'monthly') => {
+    setAdminBackupMsg(null);
+    try {
+      const range =
+        kind === 'weekly'
+          ? getWeekDateRange(adminWeeklyPreset)
+          : getMonthDateRange(adminStatementMonth);
+
+      const filename = exportAdminBillingStatementPDF({
+        periodKind: kind,
+        periodLabel: range.label,
+        startDate: range.startDate,
+        endDate: range.endDate,
+        platformName,
+        adminEmail: firebaseUser.email || '',
+        mrr: metrics.mrr,
+        activeSubscriptionsCount: metrics.activeCount,
+        rows: unifiedPayments,
+      });
+
+      setAdminBackupMsg({
+        type: 'success',
+        text: `PDF "${filename}" gerado com o logotipo oficial do JORQ no topo.`,
+      });
+    } catch (err) {
+      setAdminBackupMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Erro ao gerar extrato administrativo em PDF.',
+      });
+    }
+  };
+
+  const handleDownloadAdminBackup = () => {
+    setAdminBackupMsg(null);
+    try {
+      const payload = buildAdminPlatformBackupPayload({
+        adminEmail: firebaseUser.email || '',
+        systemSettings: {
+          id: 'global',
+          platformName,
+          supportEmail,
+          mpEnvironment: mpEnv,
+          defaultCurrency: 'BRL',
+          maintenanceMode,
+        },
+        platformName,
+        supportEmail,
+        mpEnvironment: mpEnv,
+        maintenanceMode,
+        plans,
+        coupons,
+        companies,
+        subscriptions,
+        payments,
+      });
+      const filename = downloadAdminPlatformBackupJSON(payload);
+      setAdminBackupMsg({
+        type: 'success',
+        text: `Backup Admin "${filename}" baixado com ${plans.length} planos, ${coupons.length} cupons, ${companies.length} empresas e ${payments.length} pagamentos.`,
+      });
+    } catch (err) {
+      setAdminBackupMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Erro ao gerar backup administrativo.',
+      });
+    }
+  };
+
+  const handleAdminBackupFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (adminBackupFileRef.current) {
+      adminBackupFileRef.current.value = '';
+    }
+    if (!file) return;
+
+    setAdminBackupMsg(null);
+    setPendingAdminBackup(null);
+
+    if (file.size > MAX_BACKUP_FILE_BYTES) {
+      setAdminBackupMsg({
+        type: 'error',
+        text: 'O arquivo selecionado excede o limite de 5 MB.',
+      });
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const { payload, counts } = parseAndSanitizeAdminPlatformBackup(text);
+      setPendingAdminBackup({
+        filename: file.name,
+        payload,
+        counts,
+      });
+    } catch (err) {
+      setAdminBackupMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Erro ao ler o arquivo de backup.',
+      });
+    }
+  };
+
+  const handleConfirmAdminBackupRestore = async () => {
+    if (!pendingAdminBackup) return;
+    setAdminBackupBusy(true);
+    setAdminBackupMsg(null);
+
+    try {
+      const summary = await importAdminPlatformBackupData({
+        adminUid: firebaseUser.uid,
+        adminEmail: firebaseUser.email || '',
+        backup: pendingAdminBackup.payload,
+        existingPlans: plans,
+        existingCoupons: coupons,
+        restoreSystemSettings: restoreAdminSettings,
+      });
+
+      if (summary.settingsUpdated) {
+        const s = pendingAdminBackup.payload.systemSettings;
+        setPlatformName(s.platformName);
+        if (s.supportEmail) setSupportEmail(s.supportEmail);
+        setMpEnv(s.mpEnvironment);
+        setMaintenanceMode(s.maintenanceMode);
+      }
+
+      if (summary.appliedLanguage) {
+        setLang(summary.appliedLanguage);
+      }
+
+      await createAuditLog({
+        actorUid: firebaseUser.uid,
+        actorEmail: firebaseUser.email || '',
+        action: 'RESTORE_ADMIN_BACKUP',
+        targetCollection: 'system_settings',
+        details: `${summary.plansImported} planos e ${summary.couponsImported} cupons restaurados`,
+      });
+
+      const dupNote =
+        summary.skippedDuplicates > 0
+          ? ` (${summary.skippedDuplicates} itens já existentes foram ignorados)`
+          : '';
+      setAdminBackupMsg({
+        type: 'success',
+        text: `Restauração concluída: ${summary.plansImported} plano(s) e ${summary.couponsImported} cupom(ns) importado(s)${dupNote}.`,
+      });
+      setPendingAdminBackup(null);
+    } catch (err) {
+      setAdminBackupMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Erro ao restaurar backup administrativo.',
+      });
+    } finally {
+      setAdminBackupBusy(false);
+    }
+  };
+
   const handleNotifyClientDue = async (row: {
     sub: Subscription;
     companyName: string;
@@ -798,9 +1483,48 @@ export function AdminDashboard({
     setBillingFeedback(`Aviso de vencimento enviado no painel para ${row.companyName}.`);
   };
 
+  const handleDeactivateSubscription = async (s: Subscription, companyName: string) => {
+    await adminUpdateSubscriptionStatus(s.id, 'suspended');
+    try {
+      const token = await getIdToken();
+      await fetch('/api/admin/set-company-access', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          companyId: s.companyId,
+          subscriptionId: s.id,
+          userId: s.userId,
+          planId: s.planId,
+          planName: s.planName,
+          billingCycle: s.billingCycle,
+          totalAmount: s.totalAmount,
+          status: 'suspended',
+        }),
+      });
+    } catch {
+      // ignore transient sync failure
+    }
+    await createAuditLog({
+      actorUid: firebaseUser.uid,
+      actorEmail: firebaseUser.email || '',
+      companyId: s.companyId,
+      action: 'DEACTIVATE_SUBSCRIPTION',
+      targetCollection: 'subscriptions',
+      targetId: s.id,
+      details: `Plano ${s.planName} (${companyName}) desativado manualmente pelo administrador.`,
+    });
+    setBillingFeedback(
+      `Plano ${s.planName} de ${companyName} desativado! O acesso do cliente foi bloqueado em tempo real.`
+    );
+  };
+
   const navTabs: { id: AdminTabId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'executive', label: i18n.adminNav.executive, icon: BarChart3 },
     { id: 'clients', label: i18n.adminNav.clients, icon: Building2 },
+    { id: 'payments', label: 'Pagamentos', icon: CheckCircle2 },
     { id: 'plans', label: i18n.adminNav.plans, icon: CreditCard },
     { id: 'coupons', label: i18n.adminNav.coupons, icon: Tag },
     { id: 'billing', label: i18n.adminNav.billing, icon: Activity },
@@ -811,6 +1535,76 @@ export function AdminDashboard({
 
   return (
     <div className="min-h-screen bg-[#F8FAFC]/82 backdrop-blur-[2px] flex">
+      {/* Real-time pop-up notifications when a client pays */}
+      {paymentPopups.length > 0 && (
+        <div
+          className="fixed top-4 right-4 z-50 space-y-2.5 w-[calc(100vw-2rem)] max-w-sm pointer-events-none"
+          aria-live="polite"
+        >
+          {paymentPopups.map((popup) => (
+            <div
+              key={popup.id}
+              className="pointer-events-auto bg-white border-2 border-[#16A34A] rounded-xl shadow-xl p-4 space-y-2.5 animate-in fade-in slide-in-from-top-2"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-100 text-[#16A34A] flex items-center justify-center shrink-0">
+                    <CheckCircle2 className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-extrabold uppercase tracking-wide text-[#16A34A]">
+                      Pagamento Confirmado!
+                    </p>
+                    <p className="text-xs font-bold text-slate-900 truncate max-w-[210px]">
+                      {popup.clientName} · {popup.companyName}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPaymentPopups((prev) => prev.filter((x) => x.id !== popup.id))}
+                  className="p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+                  aria-label="Fechar notificação"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="bg-emerald-50/70 border border-emerald-200 rounded-lg px-3 py-2 text-xs space-y-0.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-slate-800">{popup.planName}</span>
+                  <span className="font-mono font-bold text-[#16A34A]">
+                    {formatBRL(popup.amount)}
+                  </span>
+                </div>
+                <p className="text-[11px] text-emerald-800">
+                  Via {popup.paymentMethod} · Plano liberado automaticamente para o cliente.
+                </p>
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentPopups((prev) => prev.filter((x) => x.id !== popup.id))}
+                  className="px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+                >
+                  Dispensar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('payments');
+                    setUnseenPaymentCount(0);
+                    setPaymentPopups((prev) => prev.filter((x) => x.id !== popup.id));
+                  }}
+                  className="px-3 py-1 text-[11px] font-semibold text-white bg-[#16A34A] rounded-md hover:bg-[#15803D] cursor-pointer"
+                >
+                  Ver em Pagamentos
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <aside
         className={`fixed inset-y-0 left-0 z-40 w-64 bg-[#0F172A] text-white flex flex-col shrink-0 transition-transform lg:translate-x-0 lg:static ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
@@ -843,6 +1637,7 @@ export function AdminDashboard({
                 type="button"
                 onClick={() => {
                   setActiveTab(t.id);
+                  if (t.id === 'payments') setUnseenPaymentCount(0);
                   setSidebarOpen(false);
                 }}
                 className={`w-full flex items-center justify-between gap-2 px-3 py-2.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
@@ -853,6 +1648,11 @@ export function AdminDashboard({
                   <Icon className="w-4 h-4 shrink-0" />
                   <span className="truncate">{t.label}</span>
                 </span>
+                {t.id === 'payments' && unseenPaymentCount > 0 && (
+                  <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-[#16A34A] text-white shrink-0">
+                    +{unseenPaymentCount}
+                  </span>
+                )}
                 {t.id === 'billing' && expiringAlerts.length > 0 && (
                   <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-amber-500 text-slate-950 shrink-0">
                     {expiringAlerts.length}
@@ -1677,6 +2477,202 @@ export function AdminDashboard({
             </div>
           )}
 
+          {activeTab === 'payments' && (
+            <div className="space-y-6">
+              {billingFeedback && (
+                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between gap-3 text-xs text-emerald-800 font-medium">
+                  <span>{billingFeedback}</span>
+                  <button
+                    type="button"
+                    onClick={() => setBillingFeedback('')}
+                    className="text-emerald-700 hover:text-emerald-950 font-semibold cursor-pointer"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white border border-slate-200 rounded-xl p-5">
+                  <p className="text-xs font-medium text-slate-500">Total Recebido (Confirmados)</p>
+                  <p className="mt-2 font-mono text-2xl font-bold text-[#16A34A]">
+                    {formatBRL(paymentSummary.totalApproved)}
+                  </p>
+                </div>
+                <div className="bg-white border border-slate-200 rounded-xl p-5">
+                  <p className="text-xs font-medium text-slate-500">Pagamentos Aprovados</p>
+                  <p className="mt-2 font-mono text-2xl font-bold text-[#0F172A]">
+                    {paymentSummary.approvedCount}
+                  </p>
+                </div>
+                <div className="bg-white border border-slate-200 rounded-xl p-5">
+                  <p className="text-xs font-medium text-slate-500">Aguardando Confirmação</p>
+                  <p className="mt-2 font-mono text-2xl font-bold text-amber-600">
+                    {paymentSummary.pendingCount}
+                  </p>
+                </div>
+                <div className="border border-emerald-200 bg-emerald-50/40 rounded-xl p-5">
+                  <p className="text-xs font-medium text-emerald-900">Liberação de Planos</p>
+                  <p className="mt-2 text-sm font-bold text-[#16A34A]">
+                    100% Automática
+                  </p>
+                  <p className="mt-1 text-[11px] text-emerald-800">
+                    Notificação em pop-up e acesso sem ação manual.
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                <div className="px-6 py-4 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                  <div>
+                    <h2 className="font-display text-base font-bold text-[#0F172A]">
+                      Pagamentos de Clientes ({filteredUnifiedPayments.length})
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Todos os pagamentos Pix e assinaturas com liberação automática no painel do cliente.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={paymentSearch}
+                        onChange={(e) => setPaymentSearch(e.target.value)}
+                        placeholder="Buscar cliente, empresa, plano ou ID MP..."
+                        className="pl-8 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg w-60 focus:outline-none focus:border-[#1E40AF]"
+                      />
+                    </div>
+                    <select
+                      value={paymentFilter}
+                      onChange={(e) => setPaymentFilter(e.target.value as 'all' | 'approved' | 'pending')}
+                      className="px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-slate-700"
+                    >
+                      <option value="all">Todos os status</option>
+                      <option value="approved">Pagos e Liberados</option>
+                      <option value="pending">Aguardando Pagamento</option>
+                    </select>
+                    <button
+                      type="button"
+                      disabled={refreshingMp}
+                      onClick={() => reconcileMpPayments()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${refreshingMp ? 'animate-spin' : ''}`} />
+                      <span>Atualizar MP</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleExportAdminStatementPDF('weekly')}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#0F172A] rounded-lg hover:bg-slate-800 cursor-pointer"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Extrato Semanal PDF</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleExportAdminStatementPDF('monthly')}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#1E40AF] bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 cursor-pointer"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Extrato Mensal PDF</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold text-slate-500">
+                        <th className="py-3 px-5">Cliente / Empresa</th>
+                        <th className="py-3 px-5">Plano / Cupom</th>
+                        <th className="py-3 px-5 text-right">Valor Pago</th>
+                        <th className="py-3 px-5">Meio / ID Mercado Pago</th>
+                        <th className="py-3 px-5">Data / Hora</th>
+                        <th className="py-3 px-5">Status</th>
+                        <th className="py-3 px-5 text-right">Controle</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-sm">
+                      {filteredUnifiedPayments.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="py-8 px-5 text-center text-xs text-slate-500">
+                            Nenhum pagamento encontrado para os filtros selecionados.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredUnifiedPayments.map((item) => (
+                          <tr key={item.key} className="hover:bg-slate-50/60">
+                            <td className="py-3 px-5 align-top">
+                              <p className="font-semibold text-slate-900">{item.clientName}</p>
+                              <p className="text-xs text-slate-600">{item.companyName}</p>
+                              {item.clientEmail && (
+                                <p className="text-[11px] text-slate-400 truncate max-w-[200px]">
+                                  {item.clientEmail}
+                                </p>
+                              )}
+                            </td>
+                            <td className="py-3 px-5 align-top">
+                              <p className="font-semibold text-slate-900">{item.planName}</p>
+                              <p className="text-xs text-slate-500">{item.billingCycle}</p>
+                              {item.couponCode && (
+                                <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-mono font-bold text-[#1E40AF] bg-blue-50 border border-blue-200 rounded">
+                                  Cupom: {item.couponCode}
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-5 align-top text-right font-mono tabular-nums font-bold text-slate-900">
+                              {formatBRL(item.amount)}
+                            </td>
+                            <td className="py-3 px-5 align-top text-xs">
+                              <p className="font-medium text-slate-800">{item.paymentMethod}</p>
+                              <p className="font-mono text-[11px] text-slate-500 truncate max-w-[160px]">
+                                {item.mpResourceId}
+                              </p>
+                            </td>
+                            <td className="py-3 px-5 align-top text-xs font-mono text-slate-600">
+                              {item.dateIso ? formatDateTimeBR(item.dateIso, 'pt') : '—'}
+                            </td>
+                            <td className="py-3 px-5 align-top text-xs font-semibold">
+                              <span
+                                className={
+                                  item.status === 'approved'
+                                    ? 'text-[#16A34A]'
+                                    : item.status === 'pending'
+                                      ? 'text-amber-700'
+                                      : 'text-[#DC2626]'
+                                }
+                              >
+                                {item.statusLabel}
+                              </span>
+                            </td>
+                            <td className="py-3 px-5 align-top text-right whitespace-nowrap">
+                              {item.subscription &&
+                              item.subscription.status !== 'suspended' &&
+                              item.subscription.status !== 'cancelled' ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleDeactivateSubscription(item.subscription!, item.companyName)
+                                  }
+                                  className="text-xs font-semibold text-[#DC2626] hover:underline cursor-pointer"
+                                >
+                                  Desativar Plano
+                                </button>
+                              ) : (
+                                <span className="text-xs text-slate-400">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
           {activeTab === 'plans' && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               <form
@@ -2054,15 +3050,31 @@ export function AdminDashboard({
                 </div>
               )}
               <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-                <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-                  <h2 className="font-display text-base font-bold text-[#0F172A]">
-                    Assinaturas de Clientes ({subscriptions.length})
-                  </h2>
-                  {expiringAlerts.length > 0 && (
-                    <span className="text-xs font-semibold text-amber-700">
-                      {expiringAlerts.length} vencendo ou vencida(s)
-                    </span>
-                  )}
+                <div className="px-6 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="font-display text-base font-bold text-[#0F172A]">
+                      Assinaturas de Clientes ({subscriptions.length})
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Pagamentos confirmados no Mercado Pago liberam o plano automaticamente em tempo real.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {expiringAlerts.length > 0 && (
+                      <span className="text-xs font-semibold text-amber-700">
+                        {expiringAlerts.length} vencendo ou vencida(s)
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      disabled={refreshingMp}
+                      onClick={() => reconcileMpPayments()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${refreshingMp ? 'animate-spin' : ''}`} />
+                      <span>Verificar Pagamentos MP</span>
+                    </button>
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse">
@@ -2134,72 +3146,17 @@ export function AdminDashboard({
                                   {notifiedSubIds[s.id] ? 'Avisado' : 'Avisar'}
                                 </button>
                               )}
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  const nextDue =
-                                    row.dueDateIso ||
-                                    addMonthsToDateIso(new Date().toISOString(), s.billingCycle);
-                                  await adminUpdateSubscriptionStatus(s.id, 'authorized', nextDue);
-                                  try {
-                                    const token = await getIdToken();
-                                    await fetch('/api/admin/set-company-access', {
-                                      method: 'POST',
-                                      headers: {
-                                        'Content-Type': 'application/json',
-                                        Authorization: `Bearer ${token}`,
-                                      },
-                                      body: JSON.stringify({
-                                        companyId: s.companyId,
-                                        subscriptionId: s.id,
-                                        userId: s.userId,
-                                        planId: s.planId,
-                                        planName: s.planName,
-                                        billingCycle: s.billingCycle,
-                                        totalAmount: s.totalAmount,
-                                        status: 'authorized',
-                                        nextBillingDate: nextDue,
-                                      }),
-                                    });
-                                  } catch {
-                                    // ignore transient sync failure
-                                  }
-                                }}
-                                className="text-xs font-semibold text-[#16A34A] hover:underline cursor-pointer"
-                              >
-                                Ativar
-                              </button>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  await adminUpdateSubscriptionStatus(s.id, 'suspended');
-                                  try {
-                                    const token = await getIdToken();
-                                    await fetch('/api/admin/set-company-access', {
-                                      method: 'POST',
-                                      headers: {
-                                        'Content-Type': 'application/json',
-                                        Authorization: `Bearer ${token}`,
-                                      },
-                                      body: JSON.stringify({
-                                        companyId: s.companyId,
-                                        subscriptionId: s.id,
-                                        userId: s.userId,
-                                        planId: s.planId,
-                                        planName: s.planName,
-                                        billingCycle: s.billingCycle,
-                                        totalAmount: s.totalAmount,
-                                        status: 'suspended',
-                                      }),
-                                    });
-                                  } catch {
-                                    // ignore transient sync failure
-                                  }
-                                }}
-                                className="text-xs font-semibold text-[#DC2626] hover:underline cursor-pointer"
-                              >
-                                Suspender
-                              </button>
+                              {s.status !== 'suspended' && s.status !== 'cancelled' ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeactivateSubscription(s, row.companyName)}
+                                  className="text-xs font-semibold text-[#DC2626] hover:underline cursor-pointer"
+                                >
+                                  Desativar Plano
+                                </button>
+                              ) : (
+                                <span className="text-xs text-slate-400">Desativada</span>
+                              )}
                             </td>
                           </tr>
                         );
@@ -2552,6 +3509,167 @@ export function AdminDashboard({
                   </button>
                 </div>
               </form>
+
+              <div className="bg-white border border-slate-200 rounded-xl p-8 space-y-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0">
+                      <HardDrive className="w-5 h-5 text-[#1E40AF]" />
+                    </div>
+                    <div>
+                      <h3 className="font-display text-lg font-bold text-[#0F172A]">
+                        Extratos PDF e Backup da Plataforma (Troca de Aparelho)
+                      </h3>
+                      <p className="mt-1 text-xs text-slate-600 leading-relaxed">
+                        Baixe extratos semanais/mensais de faturamento com o logotipo do JORQ no topo, ou exporte/restaure planos, cupons e configurações gerais para outro aparelho ou conta sem perder seu setup.
+                      </p>
+                    </div>
+                  </div>
+                  <Smartphone className="w-5 h-5 text-slate-400 shrink-0 hidden sm:block" />
+                </div>
+
+                {adminBackupMsg && (
+                  <div
+                    className={`p-3.5 rounded-lg border text-xs leading-relaxed ${
+                      adminBackupMsg.type === 'success'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                        : 'bg-red-50 border-red-200 text-red-800'
+                    }`}
+                  >
+                    {adminBackupMsg.text}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-3">
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Extrato Admin Semanal
+                    </label>
+                    <select
+                      value={adminWeeklyPreset}
+                      onChange={(e) => setAdminWeeklyPreset(e.target.value as WeeklyPreset)}
+                      className="w-full px-3 py-2 text-xs font-medium bg-white border border-slate-300 rounded-lg"
+                    >
+                      <option value="current_week">Semana Atual (Seg a Dom)</option>
+                      <option value="last_7_days">Últimos 7 dias</option>
+                      <option value="previous_week">Semana Anterior</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => handleExportAdminStatementPDF('weekly')}
+                      className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-[#0F172A] rounded-lg hover:bg-slate-800 cursor-pointer"
+                    >
+                      <FileText className="w-4 h-4" />
+                      <span>Baixar Extrato Admin Semanal (PDF)</span>
+                    </button>
+                  </div>
+
+                  <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-3">
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Extrato Admin Mensal
+                    </label>
+                    <input
+                      type="month"
+                      value={adminStatementMonth}
+                      onChange={(e) => setAdminStatementMonth(e.target.value)}
+                      className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleExportAdminStatementPDF('monthly')}
+                      className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] cursor-pointer"
+                    >
+                      <FileText className="w-4 h-4" />
+                      <span>Baixar Extrato Admin Mensal (PDF)</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleDownloadAdminBackup}
+                    disabled={adminBackupBusy}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-[#1E40AF] rounded-lg hover:bg-[#1E3A8A] disabled:opacity-50 cursor-pointer"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Baixar Backup Admin Completo (.json)</span>
+                  </button>
+
+                  <label className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer">
+                    <Upload className="w-4 h-4" />
+                    <span>Restaurar Backup Admin (.json)</span>
+                    <input
+                      ref={adminBackupFileRef}
+                      type="file"
+                      accept="application/json,.json"
+                      onChange={handleAdminBackupFileSelected}
+                      disabled={adminBackupBusy}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                {pendingAdminBackup && (
+                  <div className="p-5 bg-blue-50/70 border border-blue-200 rounded-xl space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-[#1E40AF]">
+                          Backup administrativo validado pronto para restauração
+                        </p>
+                        <p className="text-sm font-bold text-slate-900 mt-0.5">
+                          {pendingAdminBackup.payload.systemSettings.platformName} ·{' '}
+                          {pendingAdminBackup.filename}
+                        </p>
+                        <p className="text-xs text-slate-600 mt-0.5">
+                          Exportado em {formatDateTimeBR(pendingAdminBackup.payload.exportedAt, 'pt')}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="text-xs text-slate-700 bg-white border border-blue-100 rounded-lg p-3 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <span>Planos: {pendingAdminBackup.counts.plans}</span>
+                      <span>Cupons: {pendingAdminBackup.counts.coupons}</span>
+                      <span>Empresas (arquivo): {pendingAdminBackup.counts.companies}</span>
+                      <span>Pagamentos (arquivo): {pendingAdminBackup.counts.payments}</span>
+                    </div>
+
+                    <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={restoreAdminSettings}
+                        onChange={(e) => setRestoreAdminSettings(e.target.checked)}
+                        className="rounded border-slate-300"
+                      />
+                      <span>
+                        Restaurar também as configurações gerais (nome da plataforma, e-mail de suporte e ambiente MP)
+                      </span>
+                    </label>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        disabled={adminBackupBusy}
+                        onClick={handleConfirmAdminBackupRestore}
+                        className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#16A34A] rounded-lg hover:bg-emerald-700 disabled:opacity-50 cursor-pointer"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>
+                          {adminBackupBusy ? 'Restaurando...' : 'Confirmar Restauração Admin'}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={adminBackupBusy}
+                        onClick={() => setPendingAdminBackup(null)}
+                        className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               <div className="bg-white border border-slate-200 rounded-xl p-8 space-y-4">
                 <div>

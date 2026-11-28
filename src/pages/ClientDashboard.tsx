@@ -119,6 +119,8 @@ export function ClientDashboard({
   const [renewPlanId, setRenewPlanId] = useState<string | undefined>(preselectedPlanId);
   const [renewCycle, setRenewCycle] = useState<BillingCycle | undefined>(preselectedCycle);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [justUnlocked, setJustUnlocked] = useState(false);
+  const prevHasPaidAccessRef = useRef<boolean | null>(null);
 
   const initialMpReturnRef = useRef<{
     mpReturn: boolean;
@@ -275,7 +277,7 @@ export function ClientDashboard({
           for (const item of data.syncedSubscriptions) {
             const localSub = subscriptions.find((s) => s.id === item.subscriptionId);
             if (item.status === 'authorized' && !item.expired && item.subscriptionId) {
-              await syncConfirmedSubscriptionClient({
+              const syncRes = await syncConfirmedSubscriptionClient({
                 subscriptionId: item.subscriptionId,
                 companyId: company.id,
                 userId: firebaseUser.uid,
@@ -284,7 +286,7 @@ export function ClientDashboard({
                 nextBillingDate: item.nextBillingDate,
                 paidAt: item.paidAt,
               });
-              if (localSub?.couponCode && !localSub?.couponRedeemed) {
+              if (syncRes.ok && localSub?.couponCode && !localSub?.couponRedeemed) {
                 await redeemCouponForSubscriptionClient(item.subscriptionId, localSub.couponCode);
               }
             } else if (
@@ -346,6 +348,21 @@ export function ClientDashboard({
     }
   }, [accessReady, hasPaidAccess, hasInteractedNav, activeTab]);
 
+  // Real-time zero-refresh transition when access is unlocked (by Admin or Mercado Pago)
+  useEffect(() => {
+    if (!accessReady) return;
+    if (prevHasPaidAccessRef.current === false && hasPaidAccess) {
+      setJustUnlocked(true);
+      if (!hasInteractedNav && activeTab === 'subscription') {
+        setActiveTab('overview');
+      }
+    }
+    if (!hasPaidAccess) {
+      setJustUnlocked(false);
+    }
+    prevHasPaidAccessRef.current = hasPaidAccess;
+  }, [accessReady, hasPaidAccess, hasInteractedNav, activeTab]);
+
   // Mark any expired Firestore authorized subscriptions as overdue automatically
   useEffect(() => {
     if (!subsLoaded || !company || isAdmin) return;
@@ -394,6 +411,40 @@ export function ClientDashboard({
     hasExpiredPlanOnly,
     syncCompanyAccess,
   ]);
+
+  // Automatically re-check payment when client returns from bank/Mercado Pago app or while locked/pending
+  useEffect(() => {
+    if (!company || !firebaseUser || !subsLoaded || isAdmin) return;
+    const hasPendingSub = subscriptions.some((s) => s.status === 'pending');
+    if (hasPaidAccess && !hasPendingSub) return;
+
+    let lastCheckAt = 0;
+    const triggerCheck = () => {
+      if (window.document.visibilityState === 'hidden') return;
+      const now = Date.now();
+      if (now - lastCheckAt < 3000) return;
+      lastCheckAt = now;
+      syncCompanyAccess();
+    };
+
+    const handleVisibility = () => {
+      if (window.document.visibilityState === 'visible') {
+        triggerCheck();
+      }
+    };
+
+    window.addEventListener('focus', triggerCheck);
+    window.document.addEventListener('visibilitychange', handleVisibility);
+
+    const pollId =
+      !hasPaidAccess || hasPendingSub ? window.setInterval(triggerCheck, 8000) : null;
+
+    return () => {
+      window.removeEventListener('focus', triggerCheck);
+      window.document.removeEventListener('visibilitychange', handleVisibility);
+      if (pollId !== null) window.clearInterval(pollId);
+    };
+  }, [company, firebaseUser, subsLoaded, isAdmin, hasPaidAccess, subscriptions, syncCompanyAccess]);
 
   // Always subscribe to billing, plans & notifications
   useEffect(() => {
@@ -677,6 +728,39 @@ export function ClientDashboard({
         </header>
 
         <main className="flex-1 p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">
+          {justUnlocked && hasPaidAccess && !isAdmin && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 sm:p-5 flex items-center justify-between gap-4 text-emerald-950">
+              <div className="flex items-start gap-3">
+                <Sparkles className="w-5 h-5 text-[#16A34A] shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-bold">
+                    {pick({
+                      pt: 'Acesso liberado automaticamente!',
+                      en: 'Access unlocked automatically!',
+                      es: '¡Acceso liberado automáticamente!',
+                      fr: 'Accès débloqué automatiquement !',
+                    })}
+                  </p>
+                  <p className="text-xs mt-0.5 text-emerald-800">
+                    {pick({
+                      pt: 'Seu plano já está ativo e todos os módulos foram desbloqueados em tempo real.',
+                      en: 'Your plan is now active and all modules are unlocked in real time.',
+                      es: 'Tu plan ya está activo y todos los módulos están desbloqueados en tiempo real.',
+                      fr: 'Votre abonnement est actif et tous les modules sont débloqués en temps réel.',
+                    })}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setJustUnlocked(false)}
+                className="p-1 text-emerald-700 hover:text-emerald-950 cursor-pointer shrink-0"
+                aria-label="Fechar aviso"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
           {!isAdmin && isTrialValid && company.trialExpiresAt && (
             <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-indigo-950">
               <div className="flex items-start gap-3">
@@ -983,6 +1067,8 @@ export function ClientDashboard({
                 <FinanceTab
                   companyId={company.id}
                   userId={firebaseUser.uid}
+                  company={company}
+                  monthlyGoal={effectiveMonthlyGoal}
                   revenues={revenues}
                   expenses={expenses}
                   transactions={transactions}
@@ -1051,6 +1137,13 @@ export function ClientDashboard({
                   subscriptions={subscriptions}
                   payments={payments}
                   notifications={notifications}
+                  revenues={revenues}
+                  expenses={expenses}
+                  transactions={transactions}
+                  products={products}
+                  services={services}
+                  clients={clients}
+                  savedReports={savedReports}
                   onSubscriptionVerified={syncCompanyAccess}
                 />
               )}
